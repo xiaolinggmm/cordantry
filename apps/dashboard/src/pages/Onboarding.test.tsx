@@ -151,3 +151,11 @@ it("locks the draft while a creation request is being validated", async () => {
   expect(screen.getByLabelText("CEO agent")).toBeDisabled();
   expect(screen.getByRole("button", {name: "Validating and creating…"})).toBeDisabled();
 });
+
+it("shows unavailable agents with recovery guidance and keeps them unselectable", async () => {
+  render(<LanguageProvider><Onboarding agents={[{id: "codex", name: "Codex", detected: false, capabilities: [], availability: {state: "quota_exhausted", installed: true, checkedAt: "2026-11-02T00:00:00Z", retryAt: "2026-11-03T00:00:00Z"}}]} onCreate={vi.fn()} /></LanguageProvider>);
+  await userEvent.click(screen.getByRole("button", {name: "Create directly"}));
+  expect(screen.getByText(/Codex: Quota exhausted/)).toBeInTheDocument();
+  expect(screen.queryByRole("option", {name: "Codex"})).not.toBeInTheDocument();
+  expect(screen.getByText(/automatically use another available agent/)).toBeInTheDocument();
+});

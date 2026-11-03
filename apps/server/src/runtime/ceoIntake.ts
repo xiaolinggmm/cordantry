@@ -1,3 +1,4 @@
+import { selectAvailableAgent, recordAgentOutcome, availableCandidates } from "../adapters/availability";
 import { writeFileSync } from "node:fs";
 import type {
   CeoIntake,
@@ -460,9 +461,9 @@ async function assessCeoIntake(input: RunCeoIntakeJobsInput, intake: CeoIntake, 
   // The CEO Agent assesses a CEO Intake; the department's lead agent assesses a Department Intake.
   const department = intake.departmentId ? repositories.listDepartments(company.id).find((candidate) => candidate.id === intake.departmentId) : null;
   const agentId = department ? department.leadAgentId : company.selectedCeoAgentId;
-  const adapter = input.adapters.find((candidate) => candidate.id === agentId);
+  const adapter = await selectAvailableAgent(input.adapters, agentId);
   if (!adapter) {
-    finish(input, intake, { status: "failed", failureReason: "no_agent", failureMessage: `Agent ${agentId} is not available.` }, now);
+    // Keep received input queued without spending a planning attempt during an outage.
     return;
   }
 
@@ -472,8 +473,9 @@ async function assessCeoIntake(input: RunCeoIntakeJobsInput, intake: CeoIntake, 
   input.emit({ type: "ceo_intake_updated", companyId: company.id, message: "An agent is assessing founder input." });
 
   const playbook = selectPlaybook(company.founderVision);
-  const context = resolveCeoIntakeAssessmentContext(repositories, company, playbook, input.adapters, intake);
+  const context = resolveCeoIntakeAssessmentContext(repositories, company, playbook, await availableCandidates(input.adapters), intake);
   const result = await runAssessment(input, adapter, company, current, context);
+  recordAgentOutcome(adapter, result);
 
   // The company may have been paused or stopped while the CEO was thinking. A paused company's input
   // waits, and the attempt does not count; a stopped company takes no input (ADR 0044).

@@ -248,6 +248,10 @@ function formatFailureDetail(reason: string | undefined, t: (key: TranslationKey
       return t("operations.failureMissingDeliverable");
     case "needs_replan":
       return t("operations.needsReplanDetail");
+    case "agent_unavailable":
+      return t("taskStatus.failureAgentUnavailable");
+    case "agent_quota_exhausted":
+      return t("taskStatus.failureAgentQuotaExhausted");
     case "agent_failed":
       return t("operations.failureAgent");
     case "invalid_agent_output":

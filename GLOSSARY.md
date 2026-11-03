@@ -9,7 +9,7 @@ The company's choice, made during company creation, of Direct Dispatch or MAH Co
 _Avoid_: Application-wide mode, CEO model, permission mode
 
 **Direct Dispatch**:
-The execution mode in which Cordantry's CEO and scheduler retain task planning and department/Agent assignment, and assigned Agents execute the work directly.
+The execution mode in which Cordantry's CEO and scheduler retain task planning and department/Agent assignment, and available compatible Agents execute the work directly, preferring the assigned Agent.
 _Avoid_: MAH decomposition
 
 **MAH Coordination**:
@@ -33,8 +33,12 @@ A delegation whose external execution or business delivery cannot yet be safely 
 _Avoid_: Failed submission, retryable timeout
 
 **Task Assignee**:
-The Agent selected by the CEO to own a Task's business responsibility. Under MAH delegation, this does not identify the provider MAH selects.
+The Agent selected by the CEO to own a Task's business responsibility. It is the preferred execution provider in Direct Dispatch, not a guarantee of the provider selected for a particular run.
 _Avoid_: Executor, model
+
+**Execution Routing**:
+Selection of an available execution provider for a run while preserving its Task Assignee and business requirements.
+_Avoid_: Business reassignment, hidden retry
 
 **Executor Binding**:
 An immutable association between one Agent Run and the required external executor. The binding permits no substitution without a new CEO planning decision.

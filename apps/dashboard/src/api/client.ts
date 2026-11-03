@@ -17,6 +17,7 @@ export type AgentSummary = {
   name: string;
   capabilities: string[];
   detected: boolean;
+  availability?: { state: "ready" | "not_installed" | "login_required" | "quota_exhausted" | "unknown"; installed: boolean; checkedAt: string; retryAt?: string };
 };
 
 export type Locale = "en" | "zh";

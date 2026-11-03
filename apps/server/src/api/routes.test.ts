@@ -108,7 +108,7 @@ describe("API routes", () => {
     const agents = await getJson<{ agents: Array<{ id: string; detected: boolean }> }>(
       `${fixture.baseUrl}/api/agents`,
     );
-    expect(agents.agents).toContainEqual({ id: "codex", name: "Codex", capabilities: ["code", "frontend", "test"], detected: true });
+    expect(agents.agents).toContainEqual(expect.objectContaining({ id: "codex", name: "Codex", capabilities: ["code", "frontend", "test"], detected: true, availability: expect.objectContaining({ installed: true, state: "unknown" }) }));
 
     const created = await postJson<{ company: { id: string; name: string; status: string } }>(
       `${fixture.baseUrl}/api/companies`,

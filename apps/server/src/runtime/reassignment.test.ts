@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -101,6 +101,7 @@ describe("CEO reassignment", () => {
     const run = f.ceo.run;
     f.ceo.run = async request => { await gate; return run(request); };
     const first = requestCeoReassignment(f.input);
+    await vi.waitFor(() => expect(f.repositories.reassignments.get("task_1", "decision-1")?.status).toBe("pending"));
     expect(withdrawCeoReassignment(f.repositories, "task_1", "decision-1")).toMatchObject({ status: "withdrawn" });
     release();
     expect(await first).toMatchObject({ status: "withdrawn" });
@@ -131,10 +132,13 @@ describe("CEO reassignment", () => {
     await expect(requestCeoReassignment({ ...f.input, requestId: "blocked" })).rejects.toThrow(/Hold/i);
   });
 
-  it("refuses missing CEO authority and does not use an alternate planner", async () => {
+  it("uses an available executor for the CEO decision without changing company ownership", async () => {
     const f = fixture();
-    await expect(requestCeoReassignment({ ...f.input, agents: f.input.agents.filter(a => a.id !== "codex") })).rejects.toThrow(/CEO/i);
-    expect(f.calls()).toBe(0);
+    const alternative = f.input.agents.find(a => a.id === "claude-code")!;
+    alternative.run = f.ceo.run;
+    const decision = await requestCeoReassignment({ ...f.input, agents: [alternative] });
+    expect(decision).toMatchObject({ status: "applied", ceoAgentId: "claude-code" });
+    expect(f.repositories.getCompany("company_1")?.selectedCeoAgentId).toBe("codex");
   });
 
   it("does not apply a stale decision when the task changes during planning", async () => {

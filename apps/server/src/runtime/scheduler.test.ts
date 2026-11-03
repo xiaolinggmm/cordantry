@@ -1,3 +1,4 @@
+import { applyTaskTransition } from "./taskTransition";
 import { projectCeoOfficeItems, resolveTaskAffordances } from "@cordantry/core";
 import { realpathSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -143,6 +144,7 @@ describe("runSchedulerOnce", () => {
     const reply = (value: unknown) => ({exitCode: 0, stdout: JSON.stringify(value), stderr: ""});
     const command = async (args: string[]) => {
       calls.push(args);
+      if (args[0] === "--version") return reply("test");
       if (args[0] === "personal-os") return reply({ok: true, agent_slots: {background: 0, interactive: 1}});
       if (args[1] === "submit") {
         uuid = args[args.indexOf("--task-id") + 1];
@@ -1374,7 +1376,7 @@ describe("runSchedulerOnce", () => {
     client.close();
   });
 
-  it("keeps the assigned executor when it is unavailable instead of substituting a capability match", async () => {
+  it("routes unavailable executors without changing the business assignee", async () => {
     const { projectRoot, repositories, client } = createSchedulerFixture([
       createTaskRecord("task_1", "queued", "low"),
     ]);
@@ -1425,15 +1427,15 @@ describe("runSchedulerOnce", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.message).toContain("Old Worker does not support --tools.");
 
-    // A capability match must never replace the CEO-assigned executor.
+    // An available compatible executor takes over, preserving business ownership.
     const result = await runSchedulerOnce({ ...input, adapters: [unavailable, fallback] });
 
-    expect(result.started).toEqual([]);
-    expect(runs).toEqual([]);
+    expect(result.started).toEqual(["task_1"]);
+    expect(runs.length).toBeGreaterThan(0);
+    expect(client.prepare("SELECT agent_id FROM agent_runs WHERE task_id = ?").get("task_1")).toMatchObject({ agent_id: "other-worker" });
     expect(repositories.getTask("task_1")?.assigneeAgentId).toBe("mock-worker");
     const missing = await runSchedulerOnce({ ...input, adapters: [fallback] });
     expect(missing.started).toEqual([]);
-    expect(runs).toEqual([]);
     expect((await runSchedulerOnce({ ...input, adapters: [fallback], executionBackend: "mah" })).started).toEqual([]);
     expect(repositories.listTaskLocks()).toEqual([]);
 
@@ -2235,6 +2237,38 @@ describe("runSchedulerOnce", () => {
     client.close();
   });
 
+  it.each([[true, "agent_quota_exhausted"], [false, "agent_quota_exhausted"], [undefined, "agent_quota_exhausted"], [true, "agent_unavailable"]] as const)("resumes an availability failure only with confirmed termination: %s / %s", async (confirmed, reason) => {
+    const { projectRoot, repositories, client } = createSchedulerFixture([createTaskRecord("task_1", "queued", "low")]);
+    const exhausted = createMockAgentAdapter({ id: "mock-worker", name: "Worker", capabilities: ["code"] });
+    exhausted.run = async () => ({ status: "failed", exitCode: 1, stdout: "", stderr: "", failureReason: reason, terminationConfirmed: confirmed });
+    const alternative = createMockAgentAdapter({ id: "alternative", name: "Alternative", capabilities: ["code"], deliver: deliverValid });
+    const input = { projectRoot, repositories, workerId: "worker", maxTasks: 1, approvalRequired: () => false, proofCollector: () => [], emit: () => {} };
+    await runSchedulerOnce({ ...input, adapters: [exhausted] });
+    const resumed = await runSchedulerOnce({ ...input, adapters: [exhausted, alternative], proofCollector: ({task}: {task: Task}) => [createProofForTask(task)] });
+    expect(resumed.started).toEqual(confirmed === true ? ["task_1"] : []);
+    expect(repositories.getTask("task_1")?.assigneeAgentId).toBe("mock-worker");
+    if (confirmed) expect(client.prepare("SELECT agent_id FROM agent_runs ORDER BY rowid DESC LIMIT 1").get()).toMatchObject({ agent_id: "alternative" });
+    client.close();
+  });
+
+  it.each(["none", "approval", "workspace"])("keeps a quota outage parked without a safe replacement: %s", async blocker => {
+    const { projectRoot, repositories, client } = createSchedulerFixture([createTaskRecord("task_1", "queued", "low")]);
+    const exhausted = createMockAgentAdapter({ id: "mock-worker", name: "Worker", capabilities: ["code"] });
+    exhausted.run = async () => ({ status: "failed", exitCode: 1, stdout: "", stderr: "", failureReason: "agent_quota_exhausted", terminationConfirmed: true });
+    const input = { projectRoot, repositories, workerId: "worker", maxTasks: 1, approvalRequired: () => false, proofCollector: () => [], emit: () => {} };
+    await runSchedulerOnce({ ...input, adapters: [exhausted] });
+    if (blocker === "approval") applyTaskTransition({ repositories, task: "task_1", status: "blocked", hold: { kind: "awaiting_founder_approval", resolver: "founder" } });
+    if (blocker === "workspace") repositories.acquireWorkspaceClaim({ workspacePath: repositories.getTask("task_1")!.workspacePath!, taskId: "task_1", runId: "old", ownerId: "old", ownerEpoch: null, acquiredAt: new Date().toISOString(), leaseExpiresAt: "2099-01-01T00:00:00Z", now: new Date().toISOString() });
+    // A new adapter instance simulates restart: in-memory cooldown no longer exists.
+    const fresh = createMockAgentAdapter({ id: "mock-worker", name: "Worker", capabilities: ["code"] });
+    const alternative = createMockAgentAdapter({ id: "alternative", name: "Alternative", capabilities: ["code"] });
+    const resumed = await runSchedulerOnce({ ...input, now: () => new Date(Date.now() + 120000), adapters: blocker === "none" ? [fresh] : [fresh, alternative] });
+    expect(resumed.started).toEqual([]);
+    expect(repositories.getTask("task_1")?.status).toBe("blocked");
+    expect(repositories.countAgentRunsForTask("task_1")).toBe(0);
+    client.close();
+  });
+
   it("records quota exhaustion as a wait on the agent account, not a generic agent failure", async () => {
     const { projectRoot, repositories, client } = createSchedulerFixture([
       createTaskRecord("task_1", "queued", "low"),
@@ -2264,9 +2298,11 @@ describe("runSchedulerOnce", () => {
     });
 
     const task = repositories.getTask("task_1");
-    expect(result.failed).toEqual(["task_1"]);
+    expect(result.failed).toEqual([]);
+    expect(result.blocked).toContain("task_1");
+    expect(repositories.countAgentRunsForTask("task_1")).toBe(0);
     expect(task).toMatchObject({
-      status: "failed",
+      status: "blocked",
       latestFailureReason: "agent_quota_exhausted",
       latestFailureMessage: expect.stringContaining("agent account is out of quota"),
     });
@@ -2275,7 +2311,7 @@ describe("runSchedulerOnce", () => {
       expect.objectContaining({ kind: "agent_quota_exhausted" }),
     ]);
     expect(events).toContainEqual(expect.objectContaining({
-      type: "task_failed",
+      type: "task_blocked",
       taskId: "task_1",
       failureReason: "agent_quota_exhausted",
       message: expect.stringContaining("agent account is out of quota"),

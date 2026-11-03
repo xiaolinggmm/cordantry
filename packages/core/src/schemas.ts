@@ -80,6 +80,7 @@ export const agentFailureReasonSchema = z.enum([
   "clock_untrusted",
   "timeout",
   "agent_failed",
+  "agent_unavailable",
   "invalid_agent_output",
   "no_proof",
   "proof_capture_failed",

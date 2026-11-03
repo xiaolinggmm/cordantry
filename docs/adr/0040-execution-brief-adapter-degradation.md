@@ -36,7 +36,7 @@ When the selected adapter cannot reliably provide a structured execution brief, 
 4. Dispatch the substantive task to the same selected adapter.
 5. Keep artifact, proof, and verification checks as the authority for task completion and downstream readiness.
 
-The runtime must not silently switch adapters. A Claude-assigned task remains a Claude task unless a separate user-visible policy explicitly chooses a fallback adapter.
+Direct execution follows ADR 0051: the assignee is the preferred provider, availability can select another compatible executor, and the actual executor and switch are recorded. Brief protocol degradation alone does not trigger switching.
 
 Terminal preparation failures remain terminal. Process failure, quota exhaustion, unavailable launch isolation, budget exhaustion, and other real launch/runtime stops are still recorded as the step that stopped and do not dispatch substantive work. This preserves ADR 0032.
 

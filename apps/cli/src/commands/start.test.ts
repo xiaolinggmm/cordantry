@@ -110,10 +110,23 @@ describe("startCordantry", () => {
         name: "Codex",
         capabilities: ["code", "frontend"],
         detected: true,
+        availability: { installed: true, state: "unknown", checkedAt: expect.any(String) },
       });
     } finally {
       await started.close();
     }
+  });
+
+  it("reports installed but exhausted agents as unavailable without blocking startup", async () => {
+    const agent = createMockAgentAdapter({id: "codex", name: "Codex", capabilities: ["code"]});
+    agent.availability = async () => ({ state: "quota_exhausted" });
+    const logs: string[] = [];
+    const started = await startCordantry({ projectRoot: createTempProjectRoot(), host: "127.0.0.1", port: 0, agents: [agent], log: line => logs.push(line) });
+    try {
+      expect(logs).toContain("Agent Codex: unavailable");
+      const body = await (await fetch(`${started.url}/api/agents`)).json();
+      expect(body.agents[0]).toMatchObject({ detected: false, availability: { installed: true, state: "quota_exhausted" } });
+    } finally { await started.close(); }
   });
 
   it("serves a production dashboard and keeps API routes on the same origin", async () => {

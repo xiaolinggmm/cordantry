@@ -1,3 +1,4 @@
+import { availableCandidates, selectAvailableAgent } from "../adapters/availability";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { type Task, type TaskHoldKind } from "@cordantry/core";
@@ -55,8 +56,8 @@ export async function requestCeoReassignment(input: CeoReassignmentInput): Promi
   const task = repositories.getTask(input.taskId);
   if (!task) throw new Error("Task not found");
   const company = repositories.getCompany(task.companyId)!;
-  const ceo = input.agents.find(agent => agent.id === company.selectedCeoAgentId);
-  if (!ceo) throw new Error("The selected CEO is unavailable; planner substitution is forbidden");
+  const ceo = await selectAvailableAgent(input.agents, company.selectedCeoAgentId);
+  if (!ceo) throw new Error("No planning agent is available; try again after an agent becomes available");
   const requestDigest = createHash("sha256").update(JSON.stringify({ taskId: task.id, note: input.note ?? "" })).digest("hex");
   let created = false;
   const decision = repositories.transaction(() => {
@@ -86,7 +87,7 @@ export async function requestCeoReassignment(input: CeoReassignmentInput): Promi
   if (!created) return decision;
 
   try {
-    const choices = input.agents.filter(agent => agent.id !== task.assigneeAgentId && task.requiredCapabilities.every(c => agent.capabilities.includes(c)));
+    const choices = await availableCandidates(input.agents.filter(agent => agent.id !== task.assigneeAgentId && task.requiredCapabilities.every(c => agent.capabilities.includes(c))));
     if (!choices.length) throw new Error("No eligible replacement executor is configured");
     const workspace = createCompanyWorkspace(input.projectRoot, company.id).companyRoot;
     const promptPath = `${workspace}/reassignment-${createHash("sha256").update(task.id + decision.id).digest("hex")}-prompt.md`;
@@ -116,7 +117,7 @@ export async function requestCeoReassignment(input: CeoReassignmentInput): Promi
       const authority = repositories.reassignments.get(task.id, decision.id)!;
       if (authority.status !== "pending") return authority;
       const current = repositories.getTask(task.id)!;
-      if (repositories.getCompany(task.companyId)?.selectedCeoAgentId !== ceo.id || basis(repositories, current) !== decision.basis) throw new Error("Stale CEO reassignment decision");
+      if (repositories.getCompany(task.companyId)?.selectedCeoAgentId !== company.selectedCeoAgentId || basis(repositories, current) !== decision.basis) throw new Error("Stale CEO reassignment decision");
       assertSafe(repositories, current);
       const resolved: ReassignmentDecision = { ...decision, status: answer.assigneeAgentId === null ? "declined" : "applied", assigneeAgentId: answer.assigneeAgentId as string | null, reason: answer.reason as string };
       if (resolved.assigneeAgentId !== null) {

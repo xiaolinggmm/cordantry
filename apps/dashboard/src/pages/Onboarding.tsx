@@ -224,6 +224,16 @@ export function Onboarding({
                       <option value="">{zh ? "选择已检测到的 Agent" : "Choose a detected agent"}</option>
                       {agents.filter(agent => agent.detected).map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
                     </select>
+                    <p className="text-sm text-muted-foreground">{zh ? "首选 Agent 不可用时，会自动使用其他可用 Agent；全部不可用时等待恢复。" : "We automatically use another available agent if your preferred agent is unavailable, and wait if none can run."}</p>
+                    <ul className="text-sm text-muted-foreground" aria-label={zh ? "Agent 可用状态" : "Agent availability"}>
+                      {agents.filter(agent => agent.availability).map(agent => {
+                        const health = agent.availability!;
+                        const labels = zh
+                          ? {ready: "可用", not_installed: "未安装或版本不兼容，请安装或更新", login_required: "需要重新登录", quota_exhausted: "额度已用尽，等待恢复", unknown: "额度状态未知"}
+                          : {ready: "Available", not_installed: "Not installed or incompatible; install or update", login_required: "Sign in again", quota_exhausted: "Quota exhausted; waiting for recovery", unknown: "Quota unknown"};
+                        return <li key={agent.id}>{agent.name}: {labels[health.state]}{health.retryAt && Number.isFinite(Date.parse(health.retryAt)) ? ` · ${zh ? "预计恢复" : "Resets"} ${new Date(health.retryAt).toLocaleString()}` : ""}</li>;
+                      })}
+                    </ul>
                     {!agents.some(agent => agent.detected) && <p role="status">{zh ? "两种模式均需要本机可用的 Agent。安装并登录后重新检测。" : "Both modes require an available local agent. Install and sign in, then detect again."}</p>}
                     {onDetectAgents && <Button type="button" variant="ghost" disabled={agentLoadState === "loading"} onClick={onDetectAgents}>{zh ? "重新检测 Agent" : "Detect agents again"}</Button>}
                   </div>
