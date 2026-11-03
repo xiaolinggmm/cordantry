@@ -1,3 +1,4 @@
+import { recordAgentOutcome } from "../adapters/availability";
 import type {
   AgentAdapter,
   AgentRunRequest,
@@ -90,6 +91,7 @@ export class AgentSessionManager {
 
     try {
       const result = await session.run(input.request);
+      recordAgentOutcome(input.adapter, result);
       return { result, mode: "persistent_used" };
     } catch (error) {
       return {
@@ -136,6 +138,7 @@ export class AgentSessionManager {
       reason,
     });
     const result = await input.adapter.run(input.request);
+    recordAgentOutcome(input.adapter, result);
     return {
       result,
       mode: input.sessionKey ? "persistent_fallback" : "one_shot",

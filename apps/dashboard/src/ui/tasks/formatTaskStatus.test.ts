@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../../api/client";
 import { chineseTranslations, englishTranslations, type TranslationKey } from "../language/translations";
-import { formatTaskStatus } from "./formatTaskStatus";
+import { formatTaskStatus, formatTaskFailureReason } from "./formatTaskStatus";
 
 function translate(locale: "en" | "zh") {
   const messages = locale === "en" ? englishTranslations : chineseTranslations;
@@ -48,4 +48,9 @@ describe("formatTaskStatus", () => {
     expect(formatTaskStatus(task, translate("en"))).toBe("failed · agent quota exhausted");
     expect(formatTaskStatus(task, translate("zh"))).toBe("失败 · Agent 额度已耗尽");
   });
+});
+
+it("localizes an unavailable agent without exposing an internal failure code", () => {
+  expect(formatTaskFailureReason("agent_unavailable", translate("en"))).toBe("agent unavailable; waiting for recovery");
+  expect(formatTaskFailureReason("agent_unavailable", translate("zh"))).toBe("Agent 暂不可用，等待恢复");
 });

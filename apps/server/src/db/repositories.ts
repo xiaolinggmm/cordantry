@@ -1941,7 +1941,7 @@ export function createRepositories(database: DatabaseClient) {
               .prepare(
                 `SELECT COUNT(*) AS count FROM agent_runs
                  WHERE task_id = ? AND status NOT IN ('complete', 'cancelled')
-                   AND (failure_reason IS NULL OR failure_reason NOT IN ('agent_quota_exhausted', 'phase_budget_exhausted', 'run_budget_exhausted', 'task_budget_exhausted'))
+                   AND (failure_reason IS NULL OR failure_reason NOT IN ('agent_quota_exhausted', 'agent_unavailable', 'phase_budget_exhausted', 'run_budget_exhausted', 'task_budget_exhausted'))
                    AND (started_at IS NULL OR started_at > ?)`,
               )
               .get(taskId, marker.value)
@@ -1949,7 +1949,7 @@ export function createRepositories(database: DatabaseClient) {
               .prepare(
                 `SELECT COUNT(*) AS count FROM agent_runs
                  WHERE task_id = ? AND status NOT IN ('complete', 'cancelled')
-                   AND (failure_reason IS NULL OR failure_reason NOT IN ('agent_quota_exhausted', 'phase_budget_exhausted', 'run_budget_exhausted', 'task_budget_exhausted'))`,
+                   AND (failure_reason IS NULL OR failure_reason NOT IN ('agent_quota_exhausted', 'agent_unavailable', 'phase_budget_exhausted', 'run_budget_exhausted', 'task_budget_exhausted'))`,
               )
               .get(taskId)
       ) as { count: number };
@@ -2068,6 +2068,11 @@ export function createRepositories(database: DatabaseClient) {
       database.prepare("DELETE FROM verification_handoffs WHERE task_id = ?").run(taskId);
     },
 
+
+    getAgentRun(id: string): AgentRun | null {
+      const row = database.prepare("SELECT * FROM agent_runs WHERE id = ?").get(id) as AgentRunRow | undefined;
+      return row ? mapAgentRun(row) : null;
+    },
 
     listRunningAgentRunsForOwner(ownerId: string): AgentRun[] {
       return (database.prepare("SELECT * FROM agent_runs WHERE status = 'running' AND owner_id = ? ORDER BY id")

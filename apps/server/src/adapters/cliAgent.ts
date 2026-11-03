@@ -1,3 +1,4 @@
+import { probeClaudeAvailability, probeCodexAvailability } from "./availabilityProbes";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -71,6 +72,7 @@ export type CliAgentOptions = {
   resolveContractCapabilities?: (support: AdapterLaunchSupport | undefined) => AdapterContractCapability[];
   /** Injectable help reader, so tests can supply help text without spawning a real CLI. */
   readHelp?: ReadCliHelp;
+  availability?: AgentAdapter["availability"];
   timeoutMs?: number;
   log?: (line: string) => void;
 };
@@ -100,12 +102,11 @@ export function createCliAgentAdapter(options: CliAgentOptions): CliAgentAdapter
 
   const launchProbe = options.launchProbe;
   const readHelp = options.readHelp ?? readCliHelp;
-  // A probe whose help text was read is cached for the adapter's lifetime: the installed CLI does not
-  // change under a running server (restart to pick up an upgrade). A probe that could not run the CLI
-  // at all is retried, so installing the CLI later is noticed.
+  // Refresh launch support so installing, upgrading or removing a CLI is noticed without restart.
   let cachedLaunchPlan: LaunchPlan | undefined;
+  let launchPlanCheckedAt = 0;
   const resolveLaunchPlan = async (probe: CliHelpProbe): Promise<LaunchPlan> => {
-    if (cachedLaunchPlan) {
+    if (cachedLaunchPlan && Date.now() - launchPlanCheckedAt < 30_000) {
       return cachedLaunchPlan;
     }
     let helpWasRead = false;
@@ -117,6 +118,7 @@ export function createCliAgentAdapter(options: CliAgentOptions): CliAgentAdapter
     const plan: LaunchPlan = { policy: DEFAULT_LAUNCH_POLICY, support };
     if (helpWasRead) {
       cachedLaunchPlan = plan;
+      launchPlanCheckedAt = Date.now();
     }
     return plan;
   };
@@ -125,6 +127,7 @@ export function createCliAgentAdapter(options: CliAgentOptions): CliAgentAdapter
     id: options.id,
     name: options.name,
     capabilities: options.capabilities,
+    ...(options.availability ? { availability: options.availability } : {}),
     ...(options.contractCapabilities ? { contractCapabilities: options.contractCapabilities } : {}),
     ...(options.resolveContractCapabilities
       ? { resolveContractCapabilities: async () => options.resolveContractCapabilities!(launchProbe ? (await resolveLaunchPlan(launchProbe)).support : undefined) }
@@ -281,12 +284,13 @@ export function codexSandboxForGrant(grant: AgentCapabilityGrant): "workspace-wr
  *   exact denial that produced the "sandbox environment" deliverable.
  */
 export function createClaudeCodeAdapter(
-  options: Pick<CliAgentOptions, "timeoutMs" | "log" | "readHelp"> = {},
+  options: Pick<CliAgentOptions, "timeoutMs" | "log" | "readHelp" | "availability"> = {},
 ): CliAgentAdapter {
   return createCliAgentAdapter({
     id: "claude-code",
     name: "Claude Code",
-    capabilities: ["code", "frontend", "research", "writing"],
+    capabilities: ["code", "frontend", "research", "writing", "test", "refactor"],
+    availability: () => probeClaudeAvailability(),
     launchProbe: CLAUDE_CODE_LAUNCH_PROBE,
     resolveContractCapabilities: (support) => supportsFlagIfPresent(support, "--mcp-config") ? ["artifact_envelope"] : [],
     buildCommand: buildClaudeCodeCommand,
@@ -296,14 +300,15 @@ export function createClaudeCodeAdapter(
 }
 
 export function createCodexAdapter(
-  options: Pick<CliAgentOptions, "timeoutMs" | "log" | "readHelp"> & { model?: string } = {},
+  options: Pick<CliAgentOptions, "timeoutMs" | "log" | "readHelp" | "availability"> & { model?: string } = {},
 ): CliAgentAdapter {
   const model = options.model ?? process.env.CORDANTRY_CODEX_MODEL ?? DEFAULT_CODEX_MODEL;
 
   return createCliAgentAdapter({
     id: "codex",
     name: "Codex",
-    capabilities: ["code", "frontend", "test", "refactor"],
+    capabilities: ["code", "frontend", "test", "refactor", "research", "writing"],
+    availability: () => probeCodexAvailability(),
     // `-c` is a required launch flag, so every launchable Codex can take the action server.
     contractCapabilities: ["structured_execution_brief", "artifact_envelope"],
     launchProbe: CODEX_LAUNCH_PROBE,
@@ -725,7 +730,8 @@ function runCommand(
         exitCode: null,
         stdout: Buffer.concat(stdoutChunks).toString("utf8"),
         stderr: error.message,
-        failureReason: "agent_failed",
+        failureReason: (error as NodeJS.ErrnoException).code === "ENOENT" ? "agent_unavailable" : "agent_failed",
+        ...((error as NodeJS.ErrnoException).code === "ENOENT" ? { availabilityFailure: "not_installed" as const, terminationConfirmed: true } : {}),
       });
     });
     child.on("close", (code) => {
@@ -744,14 +750,16 @@ function runCommand(
         try { process.kill(-child.pid, 0); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") terminationConfirmed = true; }
       }
+      const loginRequired = code !== 0 && /not logged in|authentication failed|invalid_api_key|authentication_error|please (?:run \/login|log in|login again)/i.test(stderr);
       finish({
+        ...(loginRequired ? { availabilityFailure: "login_required" as const } : {}),
         status: code === 0 ? "complete" : "failed",
         terminationConfirmed,
         exitCode: code,
         stdout,
         stderr,
         failureReason:
-          code === 0 ? undefined : isQuotaExhaustedOutput(`${stdout}\n${stderr}`) ? "agent_quota_exhausted" : "agent_failed",
+          code === 0 ? undefined : isQuotaExhaustedOutput(`${stdout}\n${stderr}`) ? "agent_quota_exhausted" : loginRequired ? "agent_unavailable" : "agent_failed",
       });
     });
   });
@@ -777,6 +785,11 @@ const canGroupSignal = process.platform !== "win32";
 export function isQuotaExhaustedOutput(text: string): boolean {
   const normalized = text.toLowerCase();
   return (
+    normalized.includes("rate_limit_exceeded") ||
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("you've hit your limit") ||
+    normalized.includes("credit balance is too low") ||
+    normalized.includes("rate limit exceeded") ||
     normalized.includes("session limit") ||
     normalized.includes("usage limit") ||
     normalized.includes("quota exceeded") ||

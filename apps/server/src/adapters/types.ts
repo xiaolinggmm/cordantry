@@ -1,3 +1,4 @@
+import type { AvailabilityProbe } from "./availability";
 import type { AgentFailureReason } from "@cordantry/core";
 import type { AgentCapabilityGrant } from "../policies/capabilityGrant";
 import type { LaunchPlan } from "./launchPolicy";
@@ -87,6 +88,7 @@ export type RunObservationSink = {
 };
 
 export type AgentRunResult = {
+  availabilityFailure?: "login_required" | "not_installed";
   /** Runtime-owned immutable delivery snapshot; never an executor-supplied path. */
   deliveryWorkspacePath?: string;
   status: "complete" | "failed";
@@ -154,6 +156,7 @@ export type AgentAdapter = {
    * executable exists. An adapter whose launch plan is `unavailable` is not detected.
    */
   detect(): Promise<boolean>;
+  availability?(): Promise<AvailabilityProbe>;
   /**
    * How far the installed agent can enforce the Launch Policy, decided before dispatch. Absent means
    * the adapter makes no launch-isolation claim (mocks, grant-blind command templates) and is

@@ -54,6 +54,8 @@ export function formatTaskFailureReason(reason: string, t: (key: TranslationKey)
   switch (reason) {
     case "timeout":
       return t("taskStatus.failureTimeout");
+    case "agent_unavailable":
+      return t("taskStatus.failureAgentUnavailable");
     case "agent_failed":
       return t("taskStatus.failureAgentFailed");
     case "agent_quota_exhausted":

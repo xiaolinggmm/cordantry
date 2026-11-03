@@ -33,6 +33,10 @@ CORDANTRY_PORT=8787 pnpm --filter @cordantry/cli start
 
 The CLI creates `.cordantry/state.sqlite`, starts the local API server, detects Claude Code and Codex adapters, and prints the local server URL.
 
+Agent detection reports installation/compatibility, sign-in and available subscription quota. The creation form shows unavailable agents and reset times when known. Direct execution prefers your selected agent and automatically uses another compatible available agent when needed; task ownership remains unchanged and each run records its actual executor. If none can run, tasks wait. A confirmed quota or login outage can resume once another agent is available and the previous process has stopped, without using the task's failure allowance. Other Holds and execution budgets still apply.
+
+Detection uses short-lived cached status queries, not model turns. API-key/custom-provider accounts, unsupported usage endpoints and network errors show unknown quota; an installed unknown agent can run, but unknown status alone cannot clear its previously observed outage. Rechecking does not sign in, refresh credentials or buy extra usage.
+
 Choose the execution mode when creating a company. Direct dispatch is selected by default and uses the local CEO and scheduler. MAH coordination requires an existing managed project path and a MAH CLI executable; `CORDANTRY_MAH_CLI` supplies the default executable when omitted.
 
 MAH creation checks the project's identity and selected slot before saving. The slot defaults to `background`; explicitly select `interactive` in the advanced options if needed. Company mode and project identity cannot be changed after creation. MAH availability does not block runtime startup or Direct companies, and failed MAH tasks never silently fall back to Direct dispatch.

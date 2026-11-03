@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe("createCompany", () => {
-  it("generates and parses a Company Blueprint without writing company records", async () => {
+  it.each([false, true])("generates a blueprint, with an unavailable preferred CEO: %s", async unavailable => {
     const projectRoot = createTempProjectRoot();
     const blueprint = aiSaasPlaybook.createBlueprint({
       companyName: "CEO Renamed Studio",
@@ -51,7 +51,7 @@ describe("createCompany", () => {
       companyId: "company_1",
       companyName: "Pricing Page Studio",
       founderVision: "Build an AI SaaS that creates pricing pages.",
-      selectedCeoAgent: ceoAgent,
+      selectedCeoAgent: unavailable ? { ...ceoAgent, id: "unavailable", detect: async () => false, run: async () => { throw new Error("must not run unavailable CEO"); } } : ceoAgent,
       availableAgents: [ceoAgent],
       permissionMode: "balanced",
       assets: [],

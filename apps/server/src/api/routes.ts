@@ -1,3 +1,4 @@
+import { getAgentAvailability, isRunnable, selectAvailableAgent } from "../adapters/availability";
 import { checkCompanyMahConfig, invalidateCompanyMahReadiness } from "../runtime/companyExecution";
 import { mahCommand, cancelMahExecution, receiveMahExecution, reconcileMahExecution, type MahCommand } from "../adapters/mahCli";
 import { requestCeoReassignment, withdrawCeoReassignment } from "../runtime/reassignment";
@@ -147,12 +148,16 @@ async function routeRequest(
 
   if (method === "GET" && url.pathname === "/api/agents") {
     const agents = await Promise.all(
-      options.agents.map(async (agent) => ({
-        id: agent.id,
-        name: agent.name,
-        capabilities: agent.capabilities,
-        detected: await agent.detect(),
-      })),
+      options.agents.map(async (agent) => {
+        const availability = await getAgentAvailability(agent);
+        return {
+          id: agent.id,
+          name: agent.name,
+          capabilities: agent.capabilities,
+          detected: availability.installed && isRunnable(availability.state),
+          availability,
+        };
+      }),
     );
     sendJson(response, 200, { agents });
     return;
@@ -227,7 +232,7 @@ async function routeRequest(
       return;
     }
 
-    const selectedCeoAgent = options.agents.find((agent) => agent.id === body.selectedCeoAgentId);
+    let selectedCeoAgent = options.agents.find(agent => agent.id === body.selectedCeoAgentId);
 
     if (!selectedCeoAgent) {
       sendJson(response, 404, { error: `Agent not found: ${body.selectedCeoAgentId}` });
@@ -261,6 +266,11 @@ async function routeRequest(
       return true;
     };
     if (respondToExistingCreation()) return;
+    selectedCeoAgent = await selectAvailableAgent(options.agents, body.selectedCeoAgentId);
+    if (!selectedCeoAgent) {
+      sendJson(response, 503, { error: "No agent is currently available. Install or sign in to an agent, or wait for quota recovery." });
+      return;
+    }
 
     let mahConfig: Company["mahConfig"] = null;
     try {
@@ -279,7 +289,7 @@ async function routeRequest(
       name: companyName,
       founderVision: body.founderVision,
       locale,
-      selectedCeoAgentId: selectedCeoAgent.id,
+      selectedCeoAgentId: body.selectedCeoAgentId,
       playbookId: selectPlaybook(body.founderVision).id,
       permissionMode: body.permissionMode,
       status: "creating",
@@ -396,7 +406,7 @@ async function routeRequest(
       return;
     }
 
-    const selectedCeoAgent = options.agents.find((agent) => agent.id === creationInput.selectedCeoAgentId);
+    const selectedCeoAgent = await selectAvailableAgent(options.agents, creationInput.selectedCeoAgentId);
     if (!selectedCeoAgent) {
       sendJson(response, 404, { error: `Agent not found: ${creationInput.selectedCeoAgentId}` });
       return;
@@ -1097,7 +1107,7 @@ async function routeRequest(
       return;
     }
     const company = options.repositories.getCompany(task.companyId);
-    const plannerAgent = company ? options.agents.find((agent) => agent.id === company.selectedCeoAgentId) : undefined;
+    const plannerAgent = company ? await selectAvailableAgent(options.agents, company.selectedCeoAgentId) : undefined;
     try {
       const proposal = await createReplanProposalForTask({
         repositories: options.repositories,

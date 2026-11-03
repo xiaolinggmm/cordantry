@@ -5,6 +5,7 @@ export * from "./db/mahExecutions";
 export * from "./runtime/workspace";
 export * from "./adapters/types";
 export * from "./adapters/registry";
+export * from "./adapters/availability";
 export * from "./adapters/cliAgent";
 export * from "./adapters/mahCli";
 export * from "./adapters/mockAgent";

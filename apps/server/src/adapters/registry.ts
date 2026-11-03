@@ -1,3 +1,4 @@
+import { availableCandidates, getAgentAvailability } from "./availability";
 import { unavailableLaunchSupport, type AdapterLaunchSupport } from "./launchPolicy";
 import type { AgentAdapter } from "./types";
 
@@ -13,15 +14,9 @@ export function createAgentRegistry(adapters: AgentAdapter[]): AgentRegistry {
     },
 
     async selectByCapabilities(requiredCapabilities: string[]): Promise<AgentAdapter> {
-      for (const adapter of adapters) {
-        if (!hasCapabilities(adapter, requiredCapabilities)) {
-          continue;
-        }
-
-        if (await adapter.detect()) {
-          return adapter;
-        }
-      }
+      const candidates = adapters.filter(adapter => hasCapabilities(adapter, requiredCapabilities));
+      const selected = (await availableCandidates(candidates))[0];
+      if (selected) return selected;
 
       throw new Error(
         `No agent adapter detected with required capabilities: ${requiredCapabilities.join(", ")}`,
@@ -50,23 +45,32 @@ export type AdapterLaunchResolution =
  */
 export async function resolveLaunchableAdapter(candidates: AgentAdapter[]): Promise<AdapterLaunchResolution> {
   const unavailable: AdapterLaunchSupport[] = [];
-  for (const adapter of candidates) {
-    const support = adapter.launchPlan ? (await adapter.launchPlan()).support : null;
-    if (support?.isolationLevel === "unavailable") {
-      unavailable.push(support);
-      continue;
+  const ready = await availableCandidates(candidates);
+  for (const adapter of candidates.filter(a => !ready.includes(a))) {
+    const support = adapter.launchPlan ? await adapter.launchPlan().catch(() => null) : null;
+    unavailable.push(support?.support.isolationLevel === "unavailable" ? support.support : unavailableLaunchSupport(adapter.id, `Agent availability: ${(await getAgentAvailability(adapter)).state}`));
+  }
+  for (const adapter of ready) {
+    try {
+      const support = adapter.launchPlan ? (await adapter.launchPlan()).support : null;
+      if (support?.isolationLevel === "unavailable") {
+        unavailable.push(support);
+        continue;
+      }
+      const contractCapabilities = adapter.resolveContractCapabilities
+        ? await adapter.resolveContractCapabilities()
+        : adapter.contractCapabilities ?? [];
+      if (!contractCapabilities.includes("artifact_envelope") && !contractCapabilities.includes("file_delivery")) {
+        unavailable.push(unavailableLaunchSupport(
+          adapter.id,
+          `${adapter.name} cannot submit an Artifact Envelope; it is unavailable for task runs.`,
+        ));
+        continue;
+      }
+      return { launchable: true, adapter, support };
+    } catch {
+      unavailable.push(unavailableLaunchSupport(adapter.id, "Launch readiness could not be verified."));
     }
-    const contractCapabilities = adapter.resolveContractCapabilities
-      ? await adapter.resolveContractCapabilities()
-      : adapter.contractCapabilities ?? [];
-    if (!contractCapabilities.includes("artifact_envelope") && !contractCapabilities.includes("file_delivery")) {
-      unavailable.push(unavailableLaunchSupport(
-        adapter.id,
-        `${adapter.name} cannot submit an Artifact Envelope; it is unavailable for task runs.`,
-      ));
-      continue;
-    }
-    return { launchable: true, adapter, support };
   }
   return { launchable: false, unavailable };
 }

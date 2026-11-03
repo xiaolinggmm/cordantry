@@ -100,6 +100,7 @@ export type AgentFailureReason =
   | "clock_untrusted"
   | "timeout"
   | "agent_failed"
+  | "agent_unavailable"
   /**
    * The agent ran fine and returned something the runtime could not read — a Structured Output
    * Contract the reply did not satisfy. Distinct from `agent_failed`, which blames the agent for a

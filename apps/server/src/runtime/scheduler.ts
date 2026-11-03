@@ -1,3 +1,5 @@
+import { resumeAvailableTasks, taskExecutionCandidates } from "./availabilityRecovery";
+import { selectAvailableAgent, recordAgentOutcome } from "../adapters/availability";
 import { companyMahReadiness } from "./companyExecution";
 import { proofRefsToProof } from "./proofReferences";
 import { createMahCliAdapter, mahCommand, type MahCommand } from "../adapters/mahCli";
@@ -184,6 +186,7 @@ export async function runSchedulerOnce(input: RunSchedulerOnceInput): Promise<Ru
   }
 
   if (input.repositories.executionBudget.ownerBlocked(input.workerId)) return result;
+  await resumeAvailableTasks(input);
   // Bound the scan per company so an unavailable MAH company cannot fill the entire queue window.
   const queuedTasks = input.repositories.listCompanies().filter(company => company.status === "active")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -284,7 +287,7 @@ export async function runSchedulerOnce(input: RunSchedulerOnceInput): Promise<Ru
       continue;
     }
 
-    const launch = await resolveLaunchableAdapter(mahAdapter ? [mahAdapter] : adapterCandidates(input.adapters, task));
+    const launch = await resolveLaunchableAdapter(mahAdapter ? [mahAdapter] : await taskExecutionCandidates(input.repositories, input.adapters, task, now().getTime()));
     if (!launch.launchable) {
       appendLaunchUnavailableWarningOnce(input, task, launch.unavailable);
       continue;
@@ -404,6 +407,9 @@ export async function runSchedulerOnce(input: RunSchedulerOnceInput): Promise<Ru
             return;
           }
           const adapter = launch.adapter;
+          if (backend === "direct" && adapter.id !== task.assigneeAgentId) {
+            appendAndEmitTaskEvent(input, { task, type: "task_warning", message: `Execution switched from ${task.assigneeAgentId} to ${adapter.id} based on current agent availability.`, status: task.status });
+          }
           const launchWarnings = launch.support?.warnings ?? [];
 
           // One answer to "which proof_refs may this run submit", for the tool, the prompt, the submit
@@ -803,8 +809,26 @@ export async function runSchedulerOnce(input: RunSchedulerOnceInput): Promise<Ru
             timeoutResolution = escalated;
           }
 
+          if (agentResult) recordAgentOutcome(launch.adapter, agentResult);
           if (!agentResult) {
             throw new Error(`No agent result produced for task ${task.id}`);
+          }
+
+          if (backend === "direct" && agentResult.status === "failed"
+            && ["agent_quota_exhausted", "agent_unavailable"].includes(agentResult.failureReason ?? "")
+            && agentResult.terminationConfirmed !== false) {
+            const reason = agentResult.failureReason!;
+            const message = reason === "agent_quota_exhausted"
+              ? "The agent account is out of quota. Waiting for another available agent or quota recovery."
+              : "The agent is unavailable. Waiting for another available agent or sign-in.";
+            settleRun(input, agentRunId, { status: "failed", failureReason: reason, failureMessage: message, terminationConfirmed: agentResult.terminationConfirmed }, now, settled => {
+              applyTaskTransition({ repositories: settled.repositories, task, status: "blocked",
+                hold: { kind: reason === "agent_quota_exhausted" ? "agent_quota_exhausted" : "runtime_interrupted", resolver: "runtime", reason: message },
+                executionSummary: { latestFailureReason: reason, latestFailureMessage: message }, now, createId });
+              appendAndEmitTaskEvent(settled, { task, type: "task_blocked", status: "blocked", failureReason: reason, failureMessage: message, message });
+              result.blocked.push(task.id);
+            });
+            return;
           }
 
           if (budget && !budget.reason) {
@@ -1420,12 +1444,9 @@ function gatherFinalFounderReportContext(
   if (tasks.length === 0) {
     return null;
   }
-  const ceoAgent = input.adapters.find((adapter) => adapter.id === company.selectedCeoAgentId);
+  const ceoAgent = input.adapters.find((adapter) => adapter.id === company.selectedCeoAgentId) ?? input.adapters[0];
   if (!ceoAgent) {
-    // The company's selected CEO Agent adapter is not registered with this runtime. Neither the
-    // authored run nor the deterministic fallback can execute without it, so no job is enqueued and
-    // no "preparing" indicator shows. In practice the scheduler loop always carries the same adapter
-    // set the company was created against, so this is a misconfiguration guard, not a normal path.
+    // No executor is configured. Availability is checked again when the report job runs.
     return null;
   }
 
@@ -1571,7 +1592,10 @@ export async function runFinalFounderReportJobs(input: RunFinalFounderReportJobs
     }
 
     try {
-      await generateFinalFounderReport(context.buildGenerateInput());
+      const reportInput = context.buildGenerateInput();
+      const executor = await selectAvailableAgent(input.adapters, reportInput.company.selectedCeoAgentId);
+      if (!executor) continue;
+      await generateFinalFounderReport({ ...reportInput, ceoAgent: executor });
       repositories.updateFinalFounderReportJobStatus(job.id, "complete", now().toISOString());
       input.emit({
         type: "company_report_ready",
@@ -2440,11 +2464,6 @@ function emitTaskEvent(input: RunSchedulerOnceInput, record: TaskEvent): void {
     dependencyNote: record.dependencyNote ?? undefined,
     artifactWorkspacePath: record.artifactWorkspacePath ?? undefined,
   });
-}
-
-/** Assignment is a CEO decision. Execution never substitutes a capability match. */
-function adapterCandidates(adapters: AgentAdapter[], task: Task): AgentAdapter[] {
-  return adapters.filter((adapter) => adapter.id === task.assigneeAgentId);
 }
 
 /**

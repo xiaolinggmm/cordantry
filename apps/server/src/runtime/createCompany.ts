@@ -1,3 +1,4 @@
+import { availableCandidates, selectAvailableAgent } from "../adapters/availability";
 import { writeFileSync } from "node:fs";
 import type {
   BlueprintTask,
@@ -129,13 +130,16 @@ export async function createCompany(input: CreateCompanyInput): Promise<CreateCo
 }
 
 export async function generateCompanyBlueprint(input: GenerateCompanyBlueprintInput): Promise<GenerateCompanyBlueprintResult> {
+  const executor = await selectAvailableAgent(input.availableAgents.length ? input.availableAgents : [input.selectedCeoAgent], input.selectedCeoAgent.id);
+  if (!executor) throw new Error("No planning agent is currently available. Install or sign in to an agent, or wait for quota to recover.");
+  const availableAgents = await availableCandidates(input.availableAgents);
   const playbook = selectPlaybook(input.founderVision);
   const companyWorkspace = createCompanyWorkspace(input.projectRoot, input.companyId);
   const prompt = buildCeoPrompt({
     companyName: input.companyName,
     founderVision: input.founderVision,
     playbook,
-    availableAgents: input.availableAgents.map((agent) => ({
+    availableAgents: availableAgents.map((agent) => ({
       id: agent.id,
       name: agent.name,
       capabilities: agent.capabilities,
@@ -164,14 +168,14 @@ export async function generateCompanyBlueprint(input: GenerateCompanyBlueprintIn
   };
   const sessionPolicy = resolveAgentSessionPolicy({
     companyId: input.companyId,
-    agentId: input.selectedCeoAgent.id,
+    agentId: executor.id,
     permissionMode: input.permissionMode,
     purpose: "ceo_blueprint",
     grantId: grant.id,
     env: input.agentSessionEnv,
   });
   const agentRun = await (input.agentSessionManager ?? defaultAgentSessionManager).run({
-    adapter: input.selectedCeoAgent,
+    adapter: executor,
     request: agentRequest,
     sessionKey: sessionPolicy.status === "enabled" ? sessionPolicy.key : null,
   });

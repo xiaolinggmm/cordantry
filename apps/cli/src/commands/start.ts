@@ -4,6 +4,8 @@ import type { AddressInfo } from "node:net";
 import { createId } from "@cordantry/core";
 import {
   aiSaasPlaybook,
+  getAgentAvailability,
+  isRunnable,
   createApiServer,
   createClaudeCodeAdapter,
   createCodexAdapter,
@@ -74,8 +76,9 @@ export async function startCordantry(options: StartCordantryOptions): Promise<St
   const agents = options.agents ?? [createClaudeCodeAdapter({ log }), createCodexAdapter({ log })];
 
   for (const agent of agents) {
-    const detected = await agent.detect();
-    const support = (await agent.launchPlan?.())?.support;
+    const availability = await getAgentAvailability(agent);
+    const detected = availability.installed && isRunnable(availability.state);
+    const support = (await agent.launchPlan?.().catch(() => null))?.support;
     log(`Agent ${agent.name}: ${detected ? "available" : "unavailable"}${support ? ` (launch isolation: ${support.isolationLevel})` : ""}`);
     for (const warning of support?.warnings ?? []) {
       log(`Agent ${agent.name} warning: ${warning}`);

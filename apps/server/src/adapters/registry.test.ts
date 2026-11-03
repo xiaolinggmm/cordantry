@@ -812,3 +812,31 @@ function createWorkspaceWithScript(script: string): string {
   writeFileSync(join(workspacePath, "agent-script.mjs"), script, "utf8");
   return workspacePath;
 }
+
+ it("does not launch an undetected adapter without a launch plan", async () => {
+  const absent = createMockAgentAdapter({ id: "absent", name: "Absent", capabilities: ["code"] });
+  delete absent.launchPlan;
+  absent.detect = async () => false;
+  const ready = createMockAgentAdapter({ id: "ready", name: "Ready", capabilities: ["code"] });
+  expect(await resolveLaunchableAdapter([absent, ready])).toMatchObject({ launchable: true, adapter: { id: "ready" } });
+});
+
+it("reports a CLI login outage separately from ordinary task failure", async () => {
+  const workspacePath = createWorkspaceWithScript('process.stderr.write("Not logged in. Please run /login"); process.exit(1);');
+  const adapter = createCliAgentAdapter({ id: "custom", name: "Custom", capabilities: ["code"], commandTemplate: "node {promptPath}" });
+  const result = await adapter.run({ ...request, workspacePath, promptPath: join(workspacePath, "agent-script.mjs") });
+  expect(result.failureReason).toBe("agent_unavailable");
+  expect(result.availabilityFailure).toBe("login_required");
+});
+
+it.each(["rate_limit_exceeded", "insufficient_quota", "You've hit your limit", "credit balance is too low"])("recognizes provider quota failures: %s", message => {
+  expect(isQuotaExhaustedOutput(message)).toBe(true);
+});
+
+it("contains a broken launch/contract probe and uses another compatible executor", async () => {
+  const broken = createMockAgentAdapter({id: "broken", name: "Broken", capabilities: ["code"]});
+  broken.detect = async () => true;
+  broken.resolveContractCapabilities = async () => { throw new Error("private probe details"); };
+  const ready = createMockAgentAdapter({id: "ready", name: "Ready", capabilities: ["code"]});
+  expect(await resolveLaunchableAdapter([broken, ready])).toMatchObject({launchable: true, adapter: {id: "ready"}});
+});
