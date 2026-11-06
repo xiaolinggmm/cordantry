@@ -49,6 +49,16 @@ npx cordantry start
 
 ## Run The Dashboard
 
+To start the local runtime and open the product dashboard together for this source checkout:
+
+```bash
+pnpm preview:product
+```
+
+The command serves the API at `http://127.0.0.1:8787`, proxies dashboard API requests to it,
+and opens the product dashboard at `http://127.0.0.1:5173/`. It does not launch the desktop app
+or the public landing page.
+
 During development, run the dashboard separately and point it at the API server:
 
 ```bash

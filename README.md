@@ -105,6 +105,12 @@ CORDANTRY_PORT=8787 \
 pnpm --filter @cordantry/cli start
 ```
 
+For a browser preview that starts both the local runtime and the product dashboard:
+
+```bash
+pnpm preview:product
+```
+
 Start the dashboard in another terminal:
 
 ```bash

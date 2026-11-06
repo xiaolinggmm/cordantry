@@ -10,6 +10,7 @@
     "desktop": "pnpm build && pnpm --filter @cordantry/desktop dev",
     "dist": "pnpm --filter @cordantry/dashboard build && pnpm --filter @cordantry/desktop dist",
     "dev": "pnpm -r --parallel --if-present dev",
+    "preview:product": "tsx scripts/product-preview.ts",
     "smoke:execution-health": "vitest run apps/cli/src/commands/executionHealth.smoke.test.ts",
     "smoke:desktop": "pnpm build && node scripts/desktop-worker-smoke.mjs",
     "sample:execution-health": "tsx scripts/execution-health-samples.ts",
