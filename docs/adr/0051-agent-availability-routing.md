@@ -1,6 +1,6 @@
 # Agent availability and execution routing
 
-Status: accepted for implementation, following the user request to detect installed/authenticated/quota-ready Codex and Claude Code and continue with another available executor. This supersedes the direct-executor pinning in ADR 0040 and the direct-routing portion retained by ADR 0050. MAH delegation is unchanged.
+Status: superseded by [ADR 0052](0052-mah-owned-company-operations.md). Cordantry no longer probes, selects or substitutes Codex and Claude Code executors. This body remains a historical record of the former direct-execution design.
 
 ## Contract
 

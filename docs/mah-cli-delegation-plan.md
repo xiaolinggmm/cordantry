@@ -1,6 +1,6 @@
 # MAH CLI Delegation
 
-Authority: [ADR 0050](adr/0050-mah-cli-delegation-and-file-delivery.md). This replaces the MAH extension work planned under ADR 0049; the previous commit remains a historical baseline.
+Historical implementation plan. [ADR 0052](adr/0052-mah-owned-company-operations.md) replaces its product boundary. This document still describes the current delegation implementation and its migration constraints; it is not the target Cordantry product model.
 
 ## Ownership
 

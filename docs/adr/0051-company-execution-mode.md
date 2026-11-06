@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded by ADR-0052
 ---
 
 # Choose execution mode when creating a company
+
+This body records the former Direct Dispatch and MAH Coordination product decision. [ADR 0052](0052-mah-owned-company-operations.md) removes that mode choice and makes MAH the only execution plane.
 
 Founders choose Direct Dispatch or MAH Coordination when starting company creation; leaving the selection unchanged means Direct Dispatch. This confirmed product decision scopes execution mode to each company, rather than the application runtime, so MAH setup does not prevent founders from trying the existing direct workflow and different companies can use different modes.
 

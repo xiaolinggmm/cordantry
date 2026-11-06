@@ -1,6 +1,6 @@
 # MAH Owns Executor Selection; Cordantry Receives Files And Settles Business Outcomes
 
-Status: accepted. Supersedes ADR 0049's proposed MAH executor-binding integration, following the user's explicit choice of MAH-owned executor selection, file delivery and conservative reconciliation. ADR 0049 remains a historical record; its durable Candidate and single-writer business settlement principles remain.
+Status: superseded by [ADR 0052](0052-mah-owned-company-operations.md). This body remains the historical contract for the existing delegation implementation; its durable Candidate, explicit identity and single-writer business-settlement principles remain useful during migration.
 
 Cordantry delegates an execution attempt to one MAH Task through the installed public CLI. MAH chooses providers/models and owns its internal invocations, worktrees and permission enforcement. Cordantry retains planning, Task/Key Result identity, approval gates, delivery validation and business settlement. A Task Assignee is business responsibility, not a claim that a particular Claude/Codex process executes the MAH Task. Direct business reassignment remains CEO-owned; availability-based executor routing follows ADR 0051; MAH internal routing does not consume that budget. There is no Claude/Codex-only restriction or special AGY MCP requirement on this file interface.
 
