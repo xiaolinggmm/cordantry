@@ -3,6 +3,7 @@ node_modules/
 dist/
 release/
 .cordantry/
+.worktrees/
 .env
 .env.*
 !.env.example
