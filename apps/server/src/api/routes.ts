@@ -35,7 +35,7 @@ import type {
   WaitState,
 } from "@cordantry/core";
 import type { CompleteLocalizedText, Locale, LocalizedText } from "@cordantry/core";
-import { isLocale, localizedTextFromString, projectCeoOfficeItems } from "@cordantry/core";
+import { companyPlanSchema, isLocale, localizedTextFromString, projectCeoOfficeItems } from "@cordantry/core";
 import type { AgentAdapter } from "../adapters/types";
 import type { createRepositories, ReviewRecord } from "../db/repositories";
 import { EventStream } from "../events/sse";
@@ -79,6 +79,7 @@ import { serveDashboardFile } from "./staticDashboard";
 export type ApiServerOptions = {
   dashboardRoot?: string;
   mahCommand?: MahCommand;
+  companyPlanProvider?: CompanyPlanProvider;
   projectRoot: string;
   repositories: ReturnType<typeof createRepositories>;
   agents: AgentAdapter[];
@@ -87,6 +88,12 @@ export type ApiServerOptions = {
   createId?: (prefix: string) => string;
   requestSchedulerWake?: (reason: SchedulerWakeReason) => void;
 };
+
+export type CompanyPlanProvider = (input: {
+  companyId: string;
+  founderVision: string;
+  projectRoot: string;
+}) => Promise<unknown>;
 
 export type SchedulerWakeReason =
   | "dependency_cascade_queued"
@@ -167,7 +174,9 @@ async function routeRequest(
     sendJson(response, 200, {
       companies: options.repositories
         .listCompanies()
-        .map((company) => summarizeCompanyListItem(company, options.repositories)),
+        .map((company) => company.playbookId === "mah-company-plan"
+          ? publicPlannedCompany(company)
+          : summarizeCompanyListItem(company, options.repositories)),
     });
     return;
   }
@@ -213,7 +222,12 @@ async function routeRequest(
   }
 
   if (method === "POST" && url.pathname === "/api/companies") {
-    const body = await readJson<{
+    const rawBody = await readJson<Record<string, unknown>>(request);
+    if (Object.keys(rawBody).every((key) => key === "founderVision")) {
+      await acceptCompanyPlanning(response, options, rawBody.founderVision);
+      return;
+    }
+    const body = rawBody as unknown as {
       companyName?: string;
       founderVision: string;
       locale?: string;
@@ -223,7 +237,7 @@ async function routeRequest(
       creationIdempotencyKey?: string;
       executionMode?: "direct" | "mah";
       mahConfig?: { projectRoot: string; cliPath?: string; slotClass?: "background" | "interactive" };
-    }>(request);
+    };
     const companyName = body.companyName?.trim() ?? "";
     const locale: Locale = isLocale(body.locale ?? "") ? (body.locale as Locale) : "en";
 
@@ -529,6 +543,11 @@ async function routeRequest(
 
     if (!company) {
       sendJson(response, 404, { error: `Company not found: ${companyId}` });
+      return;
+    }
+
+    if (company.playbookId === "mah-company-plan") {
+      sendJson(response, 200, buildCompanyPlanningState(company, options.repositories));
       return;
     }
 
@@ -1321,6 +1340,115 @@ async function routeRequest(
   if (method === "GET" && options.dashboardRoot
     && await serveDashboardFile(response, options.dashboardRoot, url.pathname)) return;
   sendJson(response, 404, { error: "Not found" });
+}
+
+async function acceptCompanyPlanning(
+  response: ServerResponse,
+  options: ApiServerOptions,
+  founderVisionValue: unknown,
+): Promise<void> {
+  const founderVision = typeof founderVisionValue === "string" ? founderVisionValue.trim() : "";
+  if (!founderVision) {
+    sendJson(response, 400, { error: "Founder vision is required." });
+    return;
+  }
+  if (!options.companyPlanProvider) {
+    sendJson(response, 503, { error: "Company planning is not available." });
+    return;
+  }
+
+  const timestamp = (options.now ?? (() => new Date()))().toISOString();
+  const companyId = createRouteId(options, "company");
+  const company: Company = {
+    id: companyId,
+    name: "Planning company",
+    founderVision,
+    locale: "en",
+    selectedCeoAgentId: "mah",
+    playbookId: "mah-company-plan",
+    permissionMode: null,
+    executionMode: "mah",
+    mahConfig: null,
+    status: "creating",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  options.repositories.createCompany(company);
+
+  setTimeout(() => {
+    void completeCompanyPlanning({ options, company }).catch(() => {
+      options.log?.("Company planning failed validation or artifact import.");
+      options.repositories.updateCompanyStatus(company.id, "creation_failed", new Date().toISOString());
+    });
+  }, 0);
+
+  sendJson(response, 202, { company: publicPlannedCompany(company) });
+}
+
+async function completeCompanyPlanning(input: {
+  options: ApiServerOptions;
+  company: Company;
+}): Promise<void> {
+  const plan = companyPlanSchema.parse(await input.options.companyPlanProvider!({
+    companyId: input.company.id,
+    founderVision: input.company.founderVision,
+    projectRoot: input.options.projectRoot,
+  }));
+  const activatedAt = (input.options.now ?? (() => new Date()))().toISOString();
+
+  input.options.repositories.transaction(() => {
+    plan.objectives.forEach((objective, priority) => input.options.repositories.createObjective({
+      id: objective.id,
+      companyId: input.company.id,
+      title: objective.title,
+      status: "active",
+      priority,
+    }));
+    plan.departments.forEach((department) => input.options.repositories.createDepartment({
+      id: department.id,
+      companyId: input.company.id,
+      name: department.name,
+      responsibility: department.responsibility,
+      leadAgentId: "mah",
+      memoryPath: `.cordantry/companies/${input.company.id}/departments/${department.id}/memory.md`,
+    }));
+    plan.assignments.forEach((assignment) => input.options.repositories.createDepartmentAssignment({
+      ...assignment,
+      companyId: input.company.id,
+    }));
+    input.options.repositories.activatePlannedCompany(input.company.id, plan.company.name, activatedAt);
+  });
+}
+
+function publicPlannedCompany(company: Company) {
+  return {
+    id: company.id,
+    name: company.name,
+    founderVision: company.founderVision,
+    status: company.status,
+    createdAt: company.createdAt,
+    updatedAt: company.updatedAt,
+  };
+}
+
+function buildCompanyPlanningState(
+  company: Company,
+  repositories: ReturnType<typeof createRepositories>,
+) {
+  return {
+    company: publicPlannedCompany(company),
+    departments: repositories.listDepartments(company.id).map(({ id, name, responsibility }) => ({ id, name, responsibility })),
+    objectives: repositories.listObjectives(company.id).map(({ id, title, status, priority }) => ({ id, title, status, priority })),
+    assignments: repositories.listDepartmentAssignments(company.id).map((assignment) => ({
+      id: assignment.id,
+      departmentId: assignment.departmentId,
+      objectiveId: assignment.objectiveId,
+      title: assignment.title,
+      expectedOutcome: assignment.expectedOutcome,
+      dependsOnAssignmentIds: assignment.dependsOnAssignmentIds,
+      route: assignment.route,
+    })),
+  };
 }
 
 function buildCompanyState(

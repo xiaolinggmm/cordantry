@@ -515,6 +515,22 @@ export type Company = {
   updatedAt: string;
 };
 
+export type CompanyPlanRoute = {
+  kind: "ordinary_task" | "product_direction";
+  rationale: string;
+};
+
+export type DepartmentAssignment = {
+  id: string;
+  companyId: string;
+  departmentId: string;
+  objectiveId: string;
+  title: string;
+  expectedOutcome: string;
+  dependsOnAssignmentIds: string[];
+  route: CompanyPlanRoute;
+};
+
 export type CreationAttempt = {
   id: string;
   companyId: string;

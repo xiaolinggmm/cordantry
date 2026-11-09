@@ -1,5 +1,7 @@
 # Project Context
 
+> **Target-architecture notice:** [ADR 0052](docs/adr/0052-mah-owned-company-operations.md) and [MAH-owned company operations](docs/mah-owned-company-operations.md) define the accepted replacement for direct Agent planning and execution. Much of the glossary below describes the current implementation and is migration context only. New product work must not extend Direct Dispatch, Cordantry-owned executor selection, technical execution traces in the Founder UI, or fixed CEO-Agent planning.
+
 ## Glossary
 
 - **Cordantry**: Local-first runtime that coordinates installed AI coding agents as a small operating company.

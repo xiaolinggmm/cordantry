@@ -628,6 +628,90 @@ export const companyBlueprintSchema = z
     });
   });
 
+const companyPlanIdSchema = z.string().trim().min(1);
+
+export const companyPlanSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    company: z.object({ name: nonEmptyString }).strict(),
+    objectives: z.array(z.object({ id: companyPlanIdSchema, title: nonEmptyString }).strict()).min(1),
+    departments: z.array(z.object({
+      id: companyPlanIdSchema,
+      name: nonEmptyString,
+      responsibility: nonEmptyString,
+    }).strict()).min(1),
+    assignments: z.array(z.object({
+      id: companyPlanIdSchema,
+      departmentId: companyPlanIdSchema,
+      objectiveId: companyPlanIdSchema,
+      title: nonEmptyString,
+      expectedOutcome: nonEmptyString,
+      dependsOnAssignmentIds: z.array(companyPlanIdSchema),
+      route: z.object({
+        kind: z.enum(["ordinary_task", "product_direction"]),
+        rationale: nonEmptyString,
+      }).strict(),
+    }).strict()).min(1),
+  })
+  .strict()
+  .superRefine((plan, context) => {
+    const objectiveIds = new Set<string>();
+    const departmentIds = new Set<string>();
+    const assignmentIds = new Set<string>();
+
+    plan.objectives.forEach((objective, index) => {
+      if (objectiveIds.has(objective.id)) context.addIssue({
+        code: "custom", path: ["objectives", index, "id"], message: `Duplicate objective id: ${objective.id}`,
+      });
+      objectiveIds.add(objective.id);
+    });
+    plan.departments.forEach((department, index) => {
+      if (departmentIds.has(department.id)) context.addIssue({
+        code: "custom", path: ["departments", index, "id"], message: `Duplicate department id: ${department.id}`,
+      });
+      departmentIds.add(department.id);
+    });
+    plan.assignments.forEach((assignment, index) => {
+      if (assignmentIds.has(assignment.id)) context.addIssue({
+        code: "custom", path: ["assignments", index, "id"], message: `Duplicate assignment id: ${assignment.id}`,
+      });
+      assignmentIds.add(assignment.id);
+    });
+    plan.assignments.forEach((assignment, index) => {
+      if (!departmentIds.has(assignment.departmentId)) context.addIssue({
+        code: "custom", path: ["assignments", index, "departmentId"], message: `Missing department: ${assignment.departmentId}`,
+      });
+      if (!objectiveIds.has(assignment.objectiveId)) context.addIssue({
+        code: "custom", path: ["assignments", index, "objectiveId"], message: `Missing objective: ${assignment.objectiveId}`,
+      });
+      assignment.dependsOnAssignmentIds.forEach((dependencyId, dependencyIndex) => {
+        if (!assignmentIds.has(dependencyId)) context.addIssue({
+          code: "custom",
+          path: ["assignments", index, "dependsOnAssignmentIds", dependencyIndex],
+          message: `Missing assignment dependency: ${dependencyId}`,
+        });
+      });
+    });
+
+    const dependencies = new Map(plan.assignments.map((assignment) => [assignment.id, assignment.dependsOnAssignmentIds]));
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const hasCycle = (id: string): boolean => {
+      if (visiting.has(id)) return true;
+      if (visited.has(id)) return false;
+      visiting.add(id);
+      const cyclic = (dependencies.get(id) ?? []).some(hasCycle);
+      visiting.delete(id);
+      visited.add(id);
+      return cyclic;
+    };
+    if (plan.assignments.some((assignment) => hasCycle(assignment.id))) context.addIssue({
+      code: "custom", path: ["assignments"], message: "Assignment dependencies must be acyclic.",
+    });
+  });
+
+export type CompanyPlan = z.infer<typeof companyPlanSchema>;
+
 export const ceoResponseSchema = z.object({
   brief: nonEmptyString,
   blueprint: companyBlueprintSchema,
