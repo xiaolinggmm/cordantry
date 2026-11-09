@@ -22,6 +22,7 @@ import type {
   Company,
   CreationAttempt,
   Department,
+  DepartmentAssignment,
   FinalFounderReport,
   FinalFounderReportJob,
   FounderDecisionResolution,
@@ -166,6 +167,12 @@ export function createRepositories(database: DatabaseClient) {
       database
         .prepare("UPDATE companies SET status = ?, updated_at = ? WHERE id = ?")
         .run(status, updatedAt, id);
+    },
+
+    activatePlannedCompany(id: string, name: string, updatedAt: string): void {
+      database
+        .prepare("UPDATE companies SET name = ?, status = 'active', updated_at = ? WHERE id = ?")
+        .run(name, updatedAt, id);
     },
 
     /** A failed creation retried with edited input: the company takes the new choices before its next attempt. */
@@ -407,6 +414,49 @@ export function createRepositories(database: DatabaseClient) {
         .prepare("SELECT * FROM objectives WHERE company_id = ? ORDER BY priority ASC, id ASC")
         .all(companyId);
       return rows.map((row) => mapObjective(row as ObjectiveRow));
+    },
+
+    createDepartmentAssignment(assignment: DepartmentAssignment): void {
+      database.prepare(
+        `INSERT INTO department_assignments (
+          id, company_id, department_id, objective_id, title, expected_outcome,
+          depends_on_assignment_ids, route
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        assignment.id,
+        assignment.companyId,
+        assignment.departmentId,
+        assignment.objectiveId,
+        assignment.title,
+        assignment.expectedOutcome,
+        JSON.stringify(assignment.dependsOnAssignmentIds),
+        JSON.stringify(assignment.route),
+      );
+    },
+
+    listDepartmentAssignments(companyId: string): DepartmentAssignment[] {
+      const rows = database.prepare(
+        "SELECT * FROM department_assignments WHERE company_id = ? ORDER BY id ASC",
+      ).all(companyId) as Array<{
+        id: string;
+        company_id: string;
+        department_id: string;
+        objective_id: string;
+        title: string;
+        expected_outcome: string;
+        depends_on_assignment_ids: string;
+        route: string;
+      }>;
+      return rows.map((row) => ({
+        id: row.id,
+        companyId: row.company_id,
+        departmentId: row.department_id,
+        objectiveId: row.objective_id,
+        title: row.title,
+        expectedOutcome: row.expected_outcome,
+        dependsOnAssignmentIds: JSON.parse(row.depends_on_assignment_ids) as string[],
+        route: JSON.parse(row.route) as DepartmentAssignment["route"],
+      }));
     },
 
     createKeyResult(keyResult: KeyResult): void {

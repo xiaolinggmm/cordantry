@@ -110,6 +110,17 @@ export function migrate(database: DatabaseClient): void {
       priority INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS department_assignments (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      department_id TEXT NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+      objective_id TEXT NOT NULL REFERENCES objectives(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      expected_outcome TEXT NOT NULL,
+      depends_on_assignment_ids TEXT NOT NULL,
+      route TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS key_results (
       id TEXT PRIMARY KEY,
       objective_id TEXT NOT NULL REFERENCES objectives(id) ON DELETE CASCADE,
