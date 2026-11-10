@@ -10,6 +10,7 @@ import {
   createClaudeCodeAdapter,
   createCodexAdapter,
   createDatabaseClient,
+  createMahCompanyPlanProvider,
   createProofCollector,
   createRepositories,
   migrate,
@@ -49,7 +50,7 @@ export type StartCordantryOptions = {
   /** @deprecated Ignored: execution mode is persisted per company (ADR 0051). */
   executionBackend?: ExecutionBackend;
   mahCommand?: MahCommand;
-  /** @deprecated Select a MAH project in the company creation form. */
+  /** Explicit MAH project used for Company Planning; omit it to use the local continuity bridge. */
   mahProjectRoot?: string;
   /** @deprecated Slot selection is persisted in the company MAH configuration. */
   mahSlotClass?: MahSlotClass;
@@ -74,6 +75,14 @@ export async function startCordantry(options: StartCordantryOptions): Promise<St
   migrate(database);
   const repositories = createRepositories(database);
   const agents = options.agents ?? [createClaudeCodeAdapter({ log }), createCodexAdapter({ log })];
+  const mahProjectRoot = options.mahProjectRoot ?? process.env.CORDANTRY_MAH_PROJECT_ROOT;
+  const companyPlanProvider = mahProjectRoot
+    ? createMahCompanyPlanProvider({
+        repositories,
+        mahProjectRoot,
+        ...(options.mahCommand ? { command: options.mahCommand } : {}),
+      })
+    : undefined;
 
   for (const agent of agents) {
     const availability = await getAgentAvailability(agent);
@@ -92,6 +101,7 @@ export async function startCordantry(options: StartCordantryOptions): Promise<St
     projectRoot: options.projectRoot,
     repositories,
     agents,
+    ...(companyPlanProvider ? { companyPlanProvider } : {}),
     log,
     createId,
     requestSchedulerWake: (reason) => scheduler?.requestWake(reason),

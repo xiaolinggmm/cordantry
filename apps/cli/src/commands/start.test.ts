@@ -71,6 +71,48 @@ describe("startCordantry", () => {
     }
   });
 
+  it("uses an explicitly configured MAH project for Founder Vision planning", async () => {
+    const projectRoot = createTempProjectRoot();
+    const calls: string[][] = [];
+    let submittedTaskId: string | undefined;
+    const started = await startCordantry({
+      projectRoot,
+      mahProjectRoot: projectRoot,
+      agents: [],
+      schedulerIntervalMs: 60_000,
+      mahCommand: async (args) => {
+        calls.push(args);
+        if (args[0] === "task" && args[1] === "show") {
+          return submittedTaskId
+            ? { exitCode: 0, stdout: JSON.stringify({ ok: true, task: { task_id: submittedTaskId, status: "completed" } }), stderr: "" }
+            : { exitCode: 1, stdout: JSON.stringify({ ok: false, error: { code: "task_not_found" } }), stderr: "" };
+        }
+        if (args[0] === "task" && args[1] === "submit") {
+          submittedTaskId = args[args.indexOf("--task-id") + 1];
+          return { exitCode: 0, stdout: JSON.stringify({ task_id: submittedTaskId }), stderr: "" };
+        }
+        if (args[0] === "task" && args[1] === "context") {
+          return { exitCode: 0, stdout: JSON.stringify({ content: JSON.stringify(companyPlan()) }), stderr: "" };
+        }
+        throw new Error(`Unexpected MAH command: ${args.join(" ")}`);
+      },
+      log: () => undefined,
+    });
+
+    try {
+      const created = await postJson<{ company: { id: string } }>(`${started.url}/api/companies`, {
+        founderVision: "Help independent creators crop videos faster.",
+      });
+      const state = await waitForCompanyState(started.url, created.company.id, "active");
+
+      expect(state.company.status).toBe("active");
+      expect(calls.filter((args) => args[0] === "task" && args[1] === "submit")).toHaveLength(1);
+      expect(calls.some((args) => args.includes("--personal-os-slot"))).toBe(false);
+    } finally {
+      await started.close();
+    }
+  });
+
   it("starts the local API server, prints the dashboard URL, and detects configured agents", async () => {
     const projectRoot = createTempProjectRoot();
     const logs: string[] = [];
@@ -348,6 +390,28 @@ function createTempProjectRoot(): string {
   const dir = mkdtempSync(join(tmpdir(), "cordantry-cli-"));
   createdDirs.push(dir);
   return dir;
+}
+
+function companyPlan() {
+  return {
+    schemaVersion: 1,
+    company: { name: "Creator Validation Studio" },
+    objectives: [{ id: "objective-validate-demand", title: "Validate creator demand" }],
+    departments: [{
+      id: "department-user-research",
+      name: "User Research",
+      responsibility: "Learn which cropping workflow creators will pay for.",
+    }],
+    assignments: [{
+      id: "assignment-interview-creators",
+      departmentId: "department-user-research",
+      objectiveId: "objective-validate-demand",
+      title: "Interview independent creators",
+      expectedOutcome: "A ranked list of painful cropping workflows.",
+      dependsOnAssignmentIds: [],
+      route: { kind: "ordinary_task", rationale: "This is ordinary business research." },
+    }],
+  };
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {

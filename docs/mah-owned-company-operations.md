@@ -158,9 +158,9 @@ Material re-planning requires Founder confirmation. Confirmation starts a new Co
 
 ## Validation gap
 
-Installed MAH version 0.1.2088 supports generic Task description submission, attachments, metadata, stable Task IDs, Task status reads and canonical Task-document reads. These are sufficient to build a bounded prototype.
+Installed MAH version 0.1.2132 supports generic Task description submission, attachments, metadata, pre-minted stable Task IDs, Task status reads and canonical Task-document reads. A real Company Planning smoke verified the Founder Vision-to-schema-valid Company Plan artifact half of the prototype through only those public interfaces.
 
-The complete flow is not yet proven. The first implementation step must run one narrow end-to-end experiment:
+The complete flow is not yet proven. The next implementation slices must extend that verified planning boundary through one narrow end-to-end experiment:
 
 ```text
 Founder Vision

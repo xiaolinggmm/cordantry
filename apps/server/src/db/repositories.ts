@@ -1,4 +1,5 @@
 import { createMahExecutionStore } from "./mahExecutions";
+import { createMahCompanyPlanningStore } from "./mahCompanyPlanning";
 import { createReassignmentStore } from "./reassignments";
 import { createExecutionBudgetStore } from "./executionBudget";
 import { createExecutionRecoveryStore } from "./executionRecovery";
@@ -69,6 +70,7 @@ export function createRepositories(database: DatabaseClient) {
   return {
     reassignments: createReassignmentStore(database),
     mahExecutions: createMahExecutionStore(database),
+    mahCompanyPlanning: createMahCompanyPlanningStore(database),
     getTaskExecutionEpoch(taskId: string): number {
       const row = database.prepare("SELECT COALESCE(execution_epoch, 0) AS epoch FROM tasks WHERE id = ?").get(taskId) as { epoch: number } | undefined;
       return row?.epoch ?? 0;

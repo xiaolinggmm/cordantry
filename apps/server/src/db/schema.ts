@@ -44,6 +44,12 @@ export function migrate(database: DatabaseClient): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS mah_company_planning (
+      company_id TEXT PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+      record TEXT NOT NULL,
+      state TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS creation_attempts (
       id TEXT PRIMARY KEY,
       company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
