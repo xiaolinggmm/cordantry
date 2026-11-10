@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../db/client";
 import { createRepositories } from "../db/repositories";
 import { migrate } from "../db/schema";
+import type { AgentAdapter, AgentRunRequest } from "../adapters/types";
 import { createApiServer } from "./routes";
 
 const temporaryRoots: string[] = [];
@@ -16,6 +17,74 @@ afterEach(() => {
 });
 
 describe("MAH-owned company planning API", () => {
+  it("uses an available local Agent to derive the Company Plan when MAH planning is not configured", async () => {
+    const requests: AgentRunRequest[] = [];
+    const localAgent: AgentAdapter = {
+      id: "codex",
+      name: "Codex",
+      capabilities: ["research", "writing"],
+      async detect() { return true; },
+      async availability() { return { state: "ready" }; },
+      async run(request) {
+        requests.push(request);
+        return {
+          status: "complete",
+          exitCode: 0,
+          stdout: JSON.stringify(validCompanyPlan()),
+          stderr: "",
+        };
+      },
+    };
+    const fixture = await startServer(undefined, [localAgent]);
+
+    try {
+      const response = await fetch(`${fixture.baseUrl}/api/companies`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ founderVision: "Help independent creators crop videos faster." }),
+      });
+
+      expect(response.status).toBe(202);
+      const created = await response.json() as { company: { id: string } };
+      const state = await waitForActiveCompany(fixture.baseUrl, created.company.id);
+
+      expect(state.company).toMatchObject({ name: "Creator Validation Studio", status: "active" });
+      expect(fixture.repositories.getCompany(created.company.id)).toMatchObject({
+        selectedCeoAgentId: "codex",
+        executionMode: "direct",
+        mahConfig: null,
+      });
+      expect(fixture.repositories.listDepartments(created.company.id)[0]?.leadAgentId).toBe("codex");
+      expect(state.departments).toHaveLength(1);
+      expect(state.assignments).toHaveLength(1);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        taskId: `${created.company.id}_company_plan`,
+        metadata: { phase: "company_plan" },
+        grant: { granted: [], withheld: [], id: "none" },
+      });
+      expect(requests[0]?.outputSchema).toMatchObject({ type: "object", additionalProperties: false });
+      expect(JSON.stringify(state)).not.toMatch(/selectedCeoAgentId|executionMode|mahConfig|taskId|workQueue/i);
+
+      const pausedResponse = await fetch(`${fixture.baseUrl}/api/companies/${created.company.id}/pause`, { method: "POST" });
+      expect(pausedResponse.status).toBe(200);
+      const paused = await pausedResponse.json() as Record<string, unknown>;
+      expect(paused).toEqual({ company: expect.objectContaining({ id: created.company.id, status: "paused" }) });
+      expect(JSON.stringify(paused)).not.toMatch(/selectedCeoAgentId|executionMode|playbookId|mahConfig|interruptedTasks|unreachableTasks|stoppedSessions/i);
+
+      const conflictResponse = await fetch(`${fixture.baseUrl}/api/companies/${created.company.id}/pause`, { method: "POST" });
+      expect(conflictResponse.status).toBe(409);
+      const conflict = await conflictResponse.json() as Record<string, unknown>;
+      expect(conflict).toEqual({
+        error: "A paused company cannot pause.",
+        company: expect.objectContaining({ id: created.company.id, status: "paused" }),
+      });
+      expect(JSON.stringify(conflict)).not.toMatch(/selectedCeoAgentId|executionMode|playbookId|mahConfig/i);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("turns a Founder Vision and a valid MAH Company Plan artifact into Departments and Assignments", async () => {
     const companyPlan = {
       schemaVersion: 1,
@@ -191,13 +260,16 @@ function createCompanyPlanProvider(companyPlan: unknown, calls: Array<Record<str
   };
 }
 
-async function startServer(companyPlanProvider: ReturnType<typeof createCompanyPlanProvider>) {
+async function startServer(
+  companyPlanProvider?: ReturnType<typeof createCompanyPlanProvider>,
+  agents: AgentAdapter[] = [],
+) {
   const projectRoot = mkdtempSync(join(tmpdir(), "cordantry-company-planning-"));
   temporaryRoots.push(projectRoot);
   const database = createDatabaseClient(":memory:");
   migrate(database);
   const repositories = createRepositories(database);
-  const server = createApiServer({ projectRoot, repositories, agents: [], companyPlanProvider });
+  const server = createApiServer({ projectRoot, repositories, agents, companyPlanProvider });
   await new Promise<void>((resolve) => server.httpServer.listen(0, resolve));
   const address = server.httpServer.address();
   if (!address || typeof address === "string") throw new Error("Expected TCP server address.");
