@@ -132,6 +132,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   });
 
+  resumeInterruptedMahCompanyPlanning(options);
+
   return { httpServer, events };
 }
 
@@ -1390,14 +1392,34 @@ async function acceptCompanyPlanning(
   };
   options.repositories.createCompany(company);
 
+  scheduleCompanyPlanningCompletion(options, company, companyPlanProvider);
+
+  sendJson(response, 202, { company: publicPlannedCompany(company) });
+}
+
+function resumeInterruptedMahCompanyPlanning(options: ApiServerOptions): void {
+  if (!options.companyPlanProvider) return;
+  for (const company of options.repositories.listCompanies()) {
+    const planning = options.repositories.mahCompanyPlanning.get(company.id);
+    if (company.playbookId !== "mah-company-plan" || !["creating", "creation_failed"].includes(company.status)
+      || (!planning && company.status !== "creating")
+      || (company.status === "creation_failed" && planning && ["completed", "failed"].includes(planning.state))) continue;
+    options.repositories.updateCompanyStatus(company.id, "creating", (options.now ?? (() => new Date()))().toISOString());
+    scheduleCompanyPlanningCompletion(options, { ...company, status: "creating" }, options.companyPlanProvider);
+  }
+}
+
+function scheduleCompanyPlanningCompletion(
+  options: ApiServerOptions,
+  company: Company,
+  companyPlanProvider: CompanyPlanProvider,
+): void {
   setTimeout(() => {
     void completeCompanyPlanning({ options, company, companyPlanProvider }).catch(() => {
       options.log?.("Company planning failed validation or artifact import.");
       options.repositories.updateCompanyStatus(company.id, "creation_failed", new Date().toISOString());
     });
   }, 0);
-
-  sendJson(response, 202, { company: publicPlannedCompany(company) });
 }
 
 async function completeCompanyPlanning(input: {

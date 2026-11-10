@@ -1,11 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../db/client";
 import { createRepositories } from "../db/repositories";
 import { migrate } from "../db/schema";
+import type { MahCommand } from "../adapters/mahCli";
 import type { AgentAdapter, AgentRunRequest } from "../adapters/types";
+import { createMahCompanyPlanProvider } from "../runtime/mahCompanyPlan";
 import { createApiServer } from "./routes";
 
 const temporaryRoots: string[] = [];
@@ -17,6 +19,262 @@ afterEach(() => {
 });
 
 describe("MAH-owned company planning API", () => {
+  it("submits one stable MAH Planning Task and recovers its public Company Plan artifact", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "cordantry-mah-company-planning-"));
+    temporaryRoots.push(projectRoot);
+    const database = createDatabaseClient(":memory:");
+    migrate(database);
+    const repositories = createRepositories(database);
+    const mahTaskId = "8d49f0b6-c884-4a67-a44f-a7fe0e8403f4";
+    const calls: string[][] = [];
+    let submitted = false;
+    const command: MahCommand = async (args) => {
+      calls.push(args);
+      if (args[0] === "task" && args[1] === "show") {
+        return submitted
+          ? { exitCode: 0, stdout: JSON.stringify({ ok: true, task: { task_id: mahTaskId, status: "completed" } }), stderr: "" }
+          : { exitCode: 1, stdout: JSON.stringify({ ok: false, error: { code: "task_not_found" } }), stderr: "" };
+      }
+      if (args[0] === "task" && args[1] === "submit") {
+        submitted = true;
+        return {
+          exitCode: 1,
+          stdout: JSON.stringify({ error: { code: "task_submit_failed", message: "attempt to write a readonly database" } }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "task" && args[1] === "context") {
+        return { exitCode: 0, stdout: JSON.stringify({ content: JSON.stringify(validCompanyPlan()) }), stderr: "" };
+      }
+      throw new Error(`Unexpected MAH command: ${args.join(" ")}`);
+    };
+    const provider = createMahCompanyPlanProvider({
+      repositories,
+      mahProjectRoot: projectRoot,
+      command,
+      createTaskId: () => mahTaskId,
+      pollMs: 0,
+    });
+    const server = createApiServer({ projectRoot, repositories, agents: [], companyPlanProvider: provider });
+    await new Promise<void>((resolve) => server.httpServer.listen(0, resolve));
+    const address = server.httpServer.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP server address.");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const response = await fetch(`${baseUrl}/api/companies`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ founderVision: "Help independent creators crop videos faster." }),
+      });
+      expect(response.status).toBe(202);
+      const created = await response.json() as { company: { id: string } };
+      await waitForActiveCompany(baseUrl, created.company.id);
+
+      expect(repositories.mahCompanyPlanning.get(created.company.id)).toMatchObject({
+        companyId: created.company.id,
+        mahTaskId,
+        state: "completed",
+      });
+      expect(calls.filter((args) => args[0] === "task" && args[1] === "submit")).toHaveLength(1);
+      const submit = calls.find((args) => args[0] === "task" && args[1] === "submit")!;
+      expect(submit).toEqual(expect.arrayContaining([
+        "--cwd", realpathSync(projectRoot),
+        "--task-id", mahTaskId,
+        "--description-file", expect.any(String),
+        "--meta-file", expect.any(String),
+        "--attach", expect.any(String),
+        "--no-write",
+        "--format", "json",
+      ]));
+      expect(submit).not.toContain("--write");
+      expect(submit).not.toContain("--personal-os-slot");
+      expect(calls).toContainEqual([
+        "task", "context", mahTaskId,
+        "--cwd", realpathSync(projectRoot),
+        "--read", "artifacts/company-plan.json",
+        "--format", "json",
+      ]);
+
+      const recoveredProvider = createMahCompanyPlanProvider({
+        repositories,
+        mahProjectRoot: projectRoot,
+        command,
+        createTaskId: () => { throw new Error("Recovery must reuse the persisted MAH Task identity."); },
+        pollMs: 0,
+      });
+      await expect(recoveredProvider({
+        companyId: created.company.id,
+        founderVision: "Help independent creators crop videos faster.",
+        projectRoot,
+      })).resolves.toEqual(validCompanyPlan());
+      expect(calls.filter((args) => args[0] === "task" && args[1] === "submit")).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));
+      database.close();
+    }
+  });
+
+  it("resumes an unresolved MAH Company Planning Task when the API process restarts", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "cordantry-mah-company-planning-restart-"));
+    temporaryRoots.push(projectRoot);
+    const database = createDatabaseClient(":memory:");
+    migrate(database);
+    const repositories = createRepositories(database);
+    const companyId = "company_restart";
+    const mahTaskId = "4aa8f5ba-68e5-44d2-9bdb-329378d92180";
+    const founderVision = "Help independent creators crop videos faster.";
+    const timestamp = "2026-11-10T00:00:00.000Z";
+    repositories.createCompany({
+      id: companyId,
+      name: "Planning company",
+      founderVision,
+      locale: "en",
+      selectedCeoAgentId: "mah",
+      playbookId: "mah-company-plan",
+      permissionMode: null,
+      executionMode: "mah",
+      mahConfig: null,
+      status: "creation_failed",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const unresolvedProvider = createMahCompanyPlanProvider({
+      repositories,
+      mahProjectRoot: projectRoot,
+      createTaskId: () => mahTaskId,
+      pollMs: 0,
+      command: async (args) => args[1] === "submit"
+        ? { exitCode: 1, stdout: "", stderr: "Submission result lost." }
+        : { exitCode: 1, stdout: JSON.stringify({ ok: false, error: { code: "task_not_found" } }), stderr: "" },
+    });
+    await expect(unresolvedProvider({ companyId, founderVision, projectRoot })).rejects.toThrow("Submission result lost");
+    expect(repositories.mahCompanyPlanning.get(companyId)).toMatchObject({ mahTaskId, state: "unknown" });
+
+    const recoveryCalls: string[][] = [];
+    const recoveryProvider = createMahCompanyPlanProvider({
+      repositories,
+      mahProjectRoot: projectRoot,
+      createTaskId: () => { throw new Error("Recovery must not mint a second MAH Task identity."); },
+      pollMs: 0,
+      command: async (args) => {
+        recoveryCalls.push(args);
+        if (args[1] === "show") {
+          return { exitCode: 0, stdout: JSON.stringify({ ok: true, task: { task_id: mahTaskId, status: "completed" } }), stderr: "" };
+        }
+        if (args[1] === "context") {
+          return { exitCode: 0, stdout: JSON.stringify({ content: JSON.stringify(validCompanyPlan()) }), stderr: "" };
+        }
+        throw new Error("Recovery must not submit another MAH Task.");
+      },
+    });
+    const server = createApiServer({ projectRoot, repositories, agents: [], companyPlanProvider: recoveryProvider });
+    await new Promise<void>((resolve) => server.httpServer.listen(0, resolve));
+    const address = server.httpServer.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP server address.");
+
+    try {
+      await waitForActiveCompany(`http://127.0.0.1:${address.port}`, companyId);
+      expect(recoveryCalls.some((args) => args[1] === "submit")).toBe(false);
+      expect(repositories.mahCompanyPlanning.get(companyId)).toMatchObject({ mahTaskId, state: "completed" });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));
+      database.close();
+    }
+  });
+
+  it("prepares the stable MAH Task identity after a restart before the planning timer ran", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "cordantry-mah-company-planning-pre-timer-"));
+    temporaryRoots.push(projectRoot);
+    const database = createDatabaseClient(":memory:");
+    migrate(database);
+    const repositories = createRepositories(database);
+    const companyId = "company_pre_timer_restart";
+    const mahTaskId = "3d0609d2-6670-424d-b62f-7c244374240f";
+    const founderVision = "Help independent creators crop videos faster.";
+    repositories.createCompany({
+      id: companyId, name: "Planning company", founderVision, locale: "en",
+      selectedCeoAgentId: "mah", playbookId: "mah-company-plan", permissionMode: null,
+      executionMode: "mah", mahConfig: null, status: "creating",
+      createdAt: "2026-11-10T00:00:00.000Z", updatedAt: "2026-11-10T00:00:00.000Z",
+    });
+    let submitted = false;
+    const provider = createMahCompanyPlanProvider({
+      repositories, mahProjectRoot: projectRoot, createTaskId: () => mahTaskId, pollMs: 0,
+      command: async (args) => {
+        if (args[1] === "show") return submitted
+          ? { exitCode: 0, stdout: JSON.stringify({ ok: true, task: { task_id: mahTaskId, status: "completed" } }), stderr: "" }
+          : { exitCode: 1, stdout: JSON.stringify({ ok: false, error: { code: "task_not_found" } }), stderr: "" };
+        if (args[1] === "submit") {
+          submitted = true;
+          return { exitCode: 0, stdout: JSON.stringify({ task_id: mahTaskId }), stderr: "" };
+        }
+        return { exitCode: 0, stdout: JSON.stringify({ content: JSON.stringify(validCompanyPlan()) }), stderr: "" };
+      },
+    });
+    const server = createApiServer({ projectRoot, repositories, agents: [], companyPlanProvider: provider });
+    await new Promise<void>((resolve) => server.httpServer.listen(0, resolve));
+    const address = server.httpServer.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP server address.");
+
+    try {
+      await waitForActiveCompany(`http://127.0.0.1:${address.port}`, companyId);
+      expect(repositories.mahCompanyPlanning.get(companyId)).toMatchObject({ mahTaskId, state: "completed" });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));
+      database.close();
+    }
+  });
+
+  it("reuses the pre-minted UUID when the process stopped after claiming submission", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "cordantry-mah-company-planning-claimed-"));
+    temporaryRoots.push(projectRoot);
+    const database = createDatabaseClient(":memory:");
+    migrate(database);
+    const repositories = createRepositories(database);
+    const companyId = "company_claimed_restart";
+    const mahTaskId = "b7223a48-7a89-41e6-9902-d78de76e88af";
+    const founderVision = "Help independent creators crop videos faster.";
+    repositories.createCompany({
+      id: companyId, name: "Planning company", founderVision, locale: "en",
+      selectedCeoAgentId: "mah", playbookId: "mah-company-plan", permissionMode: null,
+      executionMode: "mah", mahConfig: null, status: "creation_failed",
+      createdAt: "2026-11-10T00:00:00.000Z", updatedAt: "2026-11-10T00:00:00.000Z",
+    });
+    const interruptedProvider = createMahCompanyPlanProvider({
+      repositories, mahProjectRoot: projectRoot, createTaskId: () => mahTaskId,
+      command: async (args) => {
+        if (args[1] === "show") return { exitCode: 1, stdout: JSON.stringify({ ok: false, error: { code: "task_not_found" } }), stderr: "" };
+        throw new Error("Process stopped before the MAH CLI was spawned.");
+      },
+    });
+    await expect(interruptedProvider({ companyId, founderVision, projectRoot }))
+      .rejects.toThrow("Process stopped before the MAH CLI was spawned");
+    expect(repositories.mahCompanyPlanning.get(companyId)).toMatchObject({ mahTaskId, state: "submitting" });
+
+    const submittedIds: string[] = [];
+    let submitted = false;
+    const recoveredProvider = createMahCompanyPlanProvider({
+      repositories, mahProjectRoot: projectRoot,
+      createTaskId: () => { throw new Error("Recovery must not mint a second UUID."); },
+      pollMs: 0,
+      command: async (args) => {
+        if (args[1] === "show") return submitted
+          ? { exitCode: 0, stdout: JSON.stringify({ ok: true, task: { task_id: mahTaskId, status: "completed" } }), stderr: "" }
+          : { exitCode: 1, stdout: JSON.stringify({ ok: false, error: { code: "task_not_found" } }), stderr: "" };
+        if (args[1] === "submit") {
+          submittedIds.push(args[args.indexOf("--task-id") + 1]);
+          submitted = true;
+          return { exitCode: 0, stdout: JSON.stringify({ task_id: mahTaskId }), stderr: "" };
+        }
+        return { exitCode: 0, stdout: JSON.stringify({ content: JSON.stringify(validCompanyPlan()) }), stderr: "" };
+      },
+    });
+    await expect(recoveredProvider({ companyId, founderVision, projectRoot })).resolves.toEqual(validCompanyPlan());
+    expect(submittedIds).toEqual([mahTaskId]);
+    database.close();
+  });
+
   it("uses an available local Agent to derive the Company Plan when MAH planning is not configured", async () => {
     const requests: AgentRunRequest[] = [];
     const localAgent: AgentAdapter = {
