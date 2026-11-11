@@ -29,11 +29,15 @@ Adding an `inline` affordance also requires a handler keyed in `TaskStatusAction
 
 ## Workbench Commands Are Decided Once
 
-Company-level founder commands (Create Company, Pause, Resume and Stop Operating) are defined in `components/workbench/workbenchCommands.ts`, each with its label key, whether it can run now, and its handler. Every place that offers one reads it from there: the Workbench header, Settings, and the two keyboard shortcuts (Cmd+Enter in the Onboarding Wizard, Shift+Cmd+K for Pause and Resume). A surface lays commands out; it never decides on its own when one is available. Page navigation is the rail's, not a command. Task actions are not commands either: they come from server affordances, as above.
+Company-level founder commands (Create Company, Pause Company, Resume Company and Stop Company) are defined in `components/workbench/workbenchCommands.ts`, each with its label key, whether it can run now, and its handler. Every place that offers one reads it from there: the Workbench header, Settings, and the two keyboard shortcuts (Cmd+Enter in the Onboarding Wizard, Shift+Cmd+K for Pause Company and Resume Company). A surface lays commands out; it never decides on its own when one is available. Page navigation is the rail's, not a command. Assignment actions are not commands either. They come from server-provided business actions.
+
+For the Company Plan model, Pause Company stops new Assignment submission and does not cancel admitted MAH work. Stop Company is final. Its UI does not claim that active work stopped until Cordantry reads confirmed terminal state from MAH.
 
 ## A Response Is Checked Where It Becomes Typed
 
-`api/client.ts` is the one place a server response becomes typed data, so it checks there that each body has the fields the dashboard reads from it straight away (a task's id and status, a company snapshot's company, departments and tasks). A body without them, from a server of another version or another service on the port, fails as a request error that the caller already shows. It does not travel on and crash a render. Fields the check does not name, including ones a newer server adds, pass through untouched.
+`api/client.ts` is the one place where a server response becomes typed data. A Company Creation Receipt must have `schemaVersion: 1`, `kind: company_creation_receipt`, the Company identity, creation status and creation time. A Company State Snapshot must have `schemaVersion: 1`, `kind: company_state`, the Company, objectives, Departments and Assignments. It must not require or synthesize legacy Tasks. A body without its required fields fails as a request error that the caller already shows. It does not travel on and crash a render. Fields the check does not name pass through untouched.
+
+Every Assignment uses one Assignment Business Status. A route-specific Assignment Stage adds business progress detail. The Dashboard never derives either field from a MAH Task status. Company Planning progress comes from the six durable Company Planning events. The Company State Snapshot supplies `lastEventSequence`. The client accepts only the next Company event sequence. Reconnection and every detected gap read the Company State Snapshot before event updates continue.
 
 A render crash that still happens stays on the Workbench page it happened on: `PageErrorBoundary` shows a retry there, keeps the rail and header usable, and starts afresh when the founder opens another page.
 
@@ -60,13 +64,19 @@ Every CEO Office card opens its item in one dialog, and that dialog holds the on
 
 The composer sends a CEO Intake. Its card comes from the server's projection, read back at once, never synthesised in the browser.
 
-## A Trace Folds Only When Its Result Is Settled
+## Department Pages Show Business Work
 
-Each task on a department page is an Execution Trace built from the runtime's progress steps; a run starts where execution starts again. A trace is open while its task runs, waits or is stuck, and folds to a summary only when the task is complete or in review, keeping its result in view. A founder's own open or fold holds while the page is open; live updates never reset it. Task actions stay mounted when a trace folds, so the outcome of an action just taken stays in view.
+Each Department page shows Assignment Cards. A card shows the expected outcome, business status, current stage, dependencies, accepted result and available Founder action. It does not show an Execution Trace or derive business state from runtime progress.
 
 ## Modern UI Direction
 
 New dashboard UI uses a modern workbench direction: clean surfaces, low visual noise, soft borders, restrained shadows, and product-specific affordances. Tailwind is the default styling path for new components. shadcn/Radix-derived components are acceptable for basic accessible interactions, but the product-defining surfaces stay owned by Cordantry components. See `docs/adr/0001-modern-dashboard-ui-foundation.md`.
+
+Every Founder surface uses Founder-facing Plain Language from root ADR 0045. The UI maps stored status, Stage and failure values to fixed Chinese and English product text. It never renders a raw code, enum, MAH object, internal identifier, stack trace or raw log. Internal diagnostic data stays outside the Founder Workbench. Company Status replaces Operations Diagnostics as the Founder page for waits, required decisions and available actions.
+
+Founder-facing failures use the typed Company Problem contract. The UI maps its public category to fixed product text and shows only the allowed actions. It never displays the stored category or any extra internal field.
+
+Creation Loading uses the six business progress messages in the MAH-owned company operations design. It uses separate plain-language messages for structural correction and admission reconciliation. It never exposes the underlying Task or document mechanism.
 
 Cumora is the primary reference for overall page language. DeepWiki is a focused reference for the Composer Input, not a page-wide glass effect. The first migration slice is Company Picker, Onboarding, and Creation Loading. shadcn configuration and generated UI components belong inside `apps/dashboard` until another frontend exists.
 
@@ -76,7 +86,7 @@ Implement the redesign foundation before page migration: dashboard-local Tailwin
 
 Creation Loading shows a Creation Trace: an ordered projection of Creation Progress Events that makes the wait feel active without inventing work the server did not report. It uses centered step cards over a soft blurred background; the current step breathes through border or shadow emphasis, completed steps use a green checked dot, pending steps stay muted, and completion fades into the Workbench after a brief visible completed state. Failed creation keeps the trace context: completed steps stay green, the failed step is highlighted with the failure reason and retry/abandon actions, and retry starts a fresh visible trace. The narrow-screen layout keeps the same vertical card model with tighter spacing. It may borrow the visual rhythm of Execution Trace, but it must not call itself one or fake task activity before departments and tasks exist.
 
-After creation the founder works in one Workbench with three-column pages; its structure, CEO Office tabs, Execution Trace behaviour, status colours and the founder term list are in `docs/adr/0002-one-workbench.md`. Never show an internal term from that list's left column.
+After creation the founder works in one Workbench with three-column pages. Its structure, CEO Office tabs, Assignment Card behavior, status colors and founder term list are in `docs/adr/0002-one-workbench.md`. Never show an internal term from that list's left column.
 
 Assemble the foundation manually rather than relying on shadcn CLI defaults. Start with Button, Input, Textarea, and Label primitives only; add heavier Radix-backed primitives when a migrated page needs them. A delivered page slice must not mix modern and Retro UI, even though temporary mixing is acceptable while developing that slice.
 

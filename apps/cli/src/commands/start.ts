@@ -7,10 +7,12 @@ import {
   getAgentAvailability,
   isRunnable,
   createApiServer,
+  applyCompanyPlanDataCutover,
   createClaudeCodeAdapter,
   createCodexAdapter,
   createDatabaseClient,
   createMahCompanyPlanProvider,
+  mahCommand as createMahCommand,
   createProofCollector,
   createRepositories,
   migrate,
@@ -18,6 +20,7 @@ import {
   runCeoIntakeJobs,
   runFinalFounderReportJobs,
   runSchedulerOnce,
+  runAssignmentCoordinatorOnce,
   executionBudgetFromEnvironment,
   type BudgetPolicy,
   type AgentAdapter,
@@ -50,7 +53,7 @@ export type StartCordantryOptions = {
   /** @deprecated Ignored: execution mode is persisted per company (ADR 0051). */
   executionBackend?: ExecutionBackend;
   mahCommand?: MahCommand;
-  /** Explicit MAH project used for Company Planning; omit it to use the local continuity bridge. */
+  /** Explicit MAH project used for Company Planning; when omitted, creation asks the Founder to install or configure MAH. */
   mahProjectRoot?: string;
   /** @deprecated Slot selection is persisted in the company MAH configuration. */
   mahSlotClass?: MahSlotClass;
@@ -73,6 +76,7 @@ export async function startCordantry(options: StartCordantryOptions): Promise<St
   // Execution mode and MAH readiness belong to each company, never server startup.
   const database = createDatabaseClient(join(stateDir, "state.sqlite"));
   migrate(database);
+  applyCompanyPlanDataCutover(database);
   const repositories = createRepositories(database);
   const agents = options.agents ?? [createClaudeCodeAdapter({ log }), createCodexAdapter({ log })];
   const mahProjectRoot = options.mahProjectRoot ?? process.env.CORDANTRY_MAH_PROJECT_ROOT;
@@ -115,6 +119,7 @@ export async function startCordantry(options: StartCordantryOptions): Promise<St
     projectRoot: options.projectRoot,
     repositories,
     mahCommand: options.mahCommand,
+    mahProjectRoot,
     createId,
     publish: (event) => apiServer.events.publish(event),
   });
@@ -157,6 +162,7 @@ export function startSchedulerLoop(input: {
   executionBackend?: ExecutionBackend;
   mahAdapter?: AgentAdapter;
   mahCommand?: MahCommand;
+  mahProjectRoot?: string;
   createId?: (prefix: string) => string;
 }) {
   const workerId = input.workerId ?? createId("cli-worker");
@@ -220,6 +226,15 @@ export function startSchedulerLoop(input: {
     running = true;
     wakePending = false;
     try {
+      if (input.mahProjectRoot) {
+        await runAssignmentCoordinatorOnce({
+          repositories: input.repositories,
+          cordantryProjectRoot: input.projectRoot,
+          mahProjectRoot: input.mahProjectRoot,
+          command: input.mahCommand ?? createMahCommand(),
+          requestSchedulerWake: () => requestWake("dependency_cascade_queued"),
+        });
+      }
       const result = await runSchedulerOnce({
         projectRoot: input.projectRoot,
         executionBackend: input.executionBackend,

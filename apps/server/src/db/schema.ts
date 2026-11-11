@@ -1,7 +1,16 @@
 import type { DatabaseClient } from "./client";
 
 export function migrate(database: DatabaseClient): void {
+  const hadCompaniesTable = Boolean(database.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'companies'",
+  ).get());
   database.exec(`
+    CREATE TABLE IF NOT EXISTS cordantry_data_format (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      version INTEGER NOT NULL,
+      applied_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS mah_executions (
       run_id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -50,6 +59,11 @@ export function migrate(database: DatabaseClient): void {
       state TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS company_problems (
+      company_id TEXT PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+      record TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS creation_attempts (
       id TEXT PRIMARY KEY,
       company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -67,7 +81,11 @@ export function migrate(database: DatabaseClient): void {
       message TEXT NOT NULL,
       message_text TEXT,
       created_at TEXT NOT NULL,
-      status TEXT
+      status TEXT,
+      sequence INTEGER NOT NULL DEFAULT 0,
+      kind TEXT,
+      occurred_at TEXT,
+      business_payload TEXT
     );
 
     CREATE TABLE IF NOT EXISTS departments (
@@ -124,7 +142,25 @@ export function migrate(database: DatabaseClient): void {
       title TEXT NOT NULL,
       expected_outcome TEXT NOT NULL,
       depends_on_assignment_ids TEXT NOT NULL,
-      route TEXT NOT NULL
+      route TEXT NOT NULL,
+      plan_order INTEGER NOT NULL DEFAULT 0,
+      stage TEXT NOT NULL DEFAULT 'research',
+      status TEXT NOT NULL DEFAULT 'waiting',
+      direction_key TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS assignment_execution_bindings (
+      assignment_id TEXT PRIMARY KEY REFERENCES department_assignments(id) ON DELETE CASCADE,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      record TEXT NOT NULL,
+      state TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS assignment_results (
+      assignment_id TEXT PRIMARY KEY REFERENCES department_assignments(id) ON DELETE CASCADE,
+      digest TEXT NOT NULL,
+      record TEXT NOT NULL,
+      accepted_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS key_results (
@@ -578,6 +614,20 @@ export function migrate(database: DatabaseClient): void {
   addColumnIfMissing(database, getColumnNames(database, "task_events"), "task_events", "execution_brief TEXT");
   addColumnIfMissing(database, getColumnNames(database, "task_events"), "task_events", "blocked_by_task_id TEXT");
   addColumnIfMissing(database, getColumnNames(database, "company_events"), "company_events", "plan_snapshot TEXT");
+  {
+    const companyEventColumns = getColumnNames(database, "company_events");
+    addColumnIfMissing(database, companyEventColumns, "company_events", "sequence INTEGER NOT NULL DEFAULT 0");
+    addColumnIfMissing(database, companyEventColumns, "company_events", "kind TEXT");
+    addColumnIfMissing(database, companyEventColumns, "company_events", "occurred_at TEXT");
+    addColumnIfMissing(database, companyEventColumns, "company_events", "business_payload TEXT");
+  }
+  {
+    const assignmentColumns = getColumnNames(database, "department_assignments");
+    addColumnIfMissing(database, assignmentColumns, "department_assignments", "plan_order INTEGER NOT NULL DEFAULT 0");
+    addColumnIfMissing(database, assignmentColumns, "department_assignments", "stage TEXT NOT NULL DEFAULT 'research'");
+    addColumnIfMissing(database, assignmentColumns, "department_assignments", "status TEXT NOT NULL DEFAULT 'waiting'");
+    addColumnIfMissing(database, assignmentColumns, "department_assignments", "direction_key TEXT");
+  }
   migrateTaskPosition(database);
   migrateCompanyPermissionMode(database);
   migrateCompanyLocale(database);
@@ -620,6 +670,26 @@ export function migrate(database: DatabaseClient): void {
   database.exec("CREATE INDEX IF NOT EXISTS founder_reports_company_created_idx ON founder_reports(company_id, created_at, id)");
   database.exec("CREATE INDEX IF NOT EXISTS founder_report_jobs_company_status_idx ON founder_report_jobs(company_id, status)");
   database.exec("CREATE INDEX IF NOT EXISTS founder_report_jobs_status_created_idx ON founder_report_jobs(status, created_at, id)");
+  if (!hadCompaniesTable) {
+    database.prepare("INSERT OR IGNORE INTO cordantry_data_format(singleton, version, applied_at) VALUES (1, 1, ?)")
+      .run(new Date().toISOString());
+  }
+}
+
+export function applyCompanyPlanDataCutover(database: DatabaseClient): void {
+  const current = database.prepare("SELECT version FROM cordantry_data_format WHERE singleton = 1").get() as { version: number } | undefined;
+  if ((current?.version ?? 0) >= 1) return;
+  database.exec("SAVEPOINT cordantry_company_plan_cutover");
+  try {
+    database.prepare("DELETE FROM companies").run();
+    database.prepare("INSERT INTO cordantry_data_format(singleton, version, applied_at) VALUES (1, 1, ?)")
+      .run(new Date().toISOString());
+    database.exec("RELEASE cordantry_company_plan_cutover");
+  } catch (error) {
+    database.exec("ROLLBACK TO cordantry_company_plan_cutover");
+    database.exec("RELEASE cordantry_company_plan_cutover");
+    throw error;
+  }
 }
 
 /** A CEO Intake records what its assessment decided, or why it failed (ADR 0046). */

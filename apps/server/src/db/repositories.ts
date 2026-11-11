@@ -1,5 +1,6 @@
 import { createMahExecutionStore } from "./mahExecutions";
 import { createMahCompanyPlanningStore } from "./mahCompanyPlanning";
+import { createAssignmentExecutionStore } from "./assignmentExecution";
 import { createReassignmentStore } from "./reassignments";
 import { createExecutionBudgetStore } from "./executionBudget";
 import { createExecutionRecoveryStore } from "./executionRecovery";
@@ -64,6 +65,14 @@ export type ReviewRecord = {
   createdAt: string;
 };
 
+export type StoredCompanyProblem = {
+  schemaVersion: 1;
+  kind: "company_problem";
+  category: "installation_required" | "setup_required" | "try_again_later" | "plan_needs_new_attempt" | "work_stopped";
+  message: string;
+  availableActions: Array<{ kind: "download_mah"; url: string } | { kind: "recheck" } | { kind: "try_again" } | { kind: "new_attempt" }>;
+};
+
 export function createRepositories(database: DatabaseClient) {
   let savepointDepth = 0;
 
@@ -71,6 +80,7 @@ export function createRepositories(database: DatabaseClient) {
     reassignments: createReassignmentStore(database),
     mahExecutions: createMahExecutionStore(database),
     mahCompanyPlanning: createMahCompanyPlanningStore(database),
+    assignmentExecution: createAssignmentExecutionStore(database),
     getTaskExecutionEpoch(taskId: string): number {
       const row = database.prepare("SELECT COALESCE(execution_epoch, 0) AS epoch FROM tasks WHERE id = ?").get(taskId) as { epoch: number } | undefined;
       return row?.epoch ?? 0;
@@ -246,8 +256,9 @@ export function createRepositories(database: DatabaseClient) {
       database
         .prepare(
           `INSERT INTO company_events (
-            id, company_id, type, message, message_text, created_at, status, plan_snapshot
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            id, company_id, type, message, message_text, created_at, status, plan_snapshot,
+            sequence, kind, occurred_at, business_payload
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           event.id,
@@ -258,14 +269,32 @@ export function createRepositories(database: DatabaseClient) {
           event.createdAt,
           event.status ?? null,
           event.planSnapshot ? JSON.stringify(event.planSnapshot) : null,
+          event.sequence ?? 0,
+          event.kind ?? null,
+          event.occurredAt ?? event.createdAt,
+          event.businessPayload ? JSON.stringify(event.businessPayload) : null,
         );
     },
 
     listCompanyEventsForCompany(companyId: string): CompanyEvent[] {
       const rows = database
-        .prepare("SELECT * FROM company_events WHERE company_id = ? ORDER BY created_at ASC, id ASC")
+        .prepare("SELECT * FROM company_events WHERE company_id = ? ORDER BY sequence ASC, created_at ASC, id ASC")
         .all(companyId);
       return rows.map((row) => mapCompanyEvent(row as CompanyEventRow));
+    },
+
+    getCompanyProblem(companyId: string): StoredCompanyProblem | null {
+      const row = database.prepare("SELECT record FROM company_problems WHERE company_id = ?").get(companyId) as { record: string } | undefined;
+      return row ? JSON.parse(row.record) as StoredCompanyProblem : null;
+    },
+
+    saveCompanyProblem(companyId: string, problem: StoredCompanyProblem): void {
+      database.prepare("INSERT INTO company_problems(company_id, record) VALUES (?, ?) ON CONFLICT(company_id) DO UPDATE SET record = excluded.record")
+        .run(companyId, JSON.stringify(problem));
+    },
+
+    clearCompanyProblem(companyId: string): void {
+      database.prepare("DELETE FROM company_problems WHERE company_id = ?").run(companyId);
     },
 
     createCeoIntake(intake: CeoIntake): void {
@@ -422,8 +451,8 @@ export function createRepositories(database: DatabaseClient) {
       database.prepare(
         `INSERT INTO department_assignments (
           id, company_id, department_id, objective_id, title, expected_outcome,
-          depends_on_assignment_ids, route
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          depends_on_assignment_ids, route, plan_order, stage, status, direction_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         assignment.id,
         assignment.companyId,
@@ -433,12 +462,16 @@ export function createRepositories(database: DatabaseClient) {
         assignment.expectedOutcome,
         JSON.stringify(assignment.dependsOnAssignmentIds),
         JSON.stringify(assignment.route),
+        assignment.order,
+        assignment.stage,
+        assignment.status,
+        assignment.directionKey ?? null,
       );
     },
 
     listDepartmentAssignments(companyId: string): DepartmentAssignment[] {
       const rows = database.prepare(
-        "SELECT * FROM department_assignments WHERE company_id = ? ORDER BY id ASC",
+        "SELECT * FROM department_assignments WHERE company_id = ? ORDER BY plan_order ASC, id ASC",
       ).all(companyId) as Array<{
         id: string;
         company_id: string;
@@ -448,6 +481,10 @@ export function createRepositories(database: DatabaseClient) {
         expected_outcome: string;
         depends_on_assignment_ids: string;
         route: string;
+        plan_order: number;
+        stage: DepartmentAssignment["stage"];
+        status: DepartmentAssignment["status"];
+        direction_key: string | null;
       }>;
       return rows.map((row) => ({
         id: row.id,
@@ -458,7 +495,16 @@ export function createRepositories(database: DatabaseClient) {
         expectedOutcome: row.expected_outcome,
         dependsOnAssignmentIds: JSON.parse(row.depends_on_assignment_ids) as string[],
         route: JSON.parse(row.route) as DepartmentAssignment["route"],
+        order: row.plan_order,
+        stage: row.stage,
+        status: row.status,
+        directionKey: row.direction_key,
       }));
+    },
+
+    updateDepartmentAssignment(assignmentId: string, fields: Pick<DepartmentAssignment, "status" | "stage">): void {
+      database.prepare("UPDATE department_assignments SET status = ?, stage = ? WHERE id = ?")
+        .run(fields.status, fields.stage, assignmentId);
     },
 
     createKeyResult(keyResult: KeyResult): void {
@@ -2385,6 +2431,10 @@ type CompanyEventRow = {
   message_text: string | null;
   created_at: string;
   status: Company["status"] | null;
+  sequence: number;
+  kind: string | null;
+  occurred_at: string | null;
+  business_payload: string | null;
 };
 
 type ObjectiveRow = {
@@ -2728,6 +2778,10 @@ function mapCompanyEvent(row: CompanyEventRow): CompanyEvent {
     ...(row.message_text ? { messageText: parseLocalizedText(row.message_text) } : {}),
     createdAt: row.created_at,
     status: row.status,
+    ...(row.sequence > 0 ? { sequence: row.sequence } : {}),
+    ...(row.kind ? { kind: row.kind } : {}),
+    ...(row.occurred_at ? { occurredAt: row.occurred_at } : {}),
+    ...(row.business_payload ? { businessPayload: JSON.parse(row.business_payload) as Record<string, unknown> } : {}),
   };
 }
 

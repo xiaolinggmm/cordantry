@@ -410,6 +410,8 @@ function companyPlan() {
       expectedOutcome: "A ranked list of painful cropping workflows.",
       dependsOnAssignmentIds: [],
       route: { kind: "ordinary_task", rationale: "This is ordinary business research." },
+      order: 0,
+      stage: "research",
     }],
   };
 }

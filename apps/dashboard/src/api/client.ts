@@ -26,8 +26,14 @@ export type CompleteLocalizedText = Record<Locale, string>;
 
 export type MahConfig = { projectRoot: string; cliPath: string; slotClass: "background" | "interactive"; projectId?: string };
 export type CreateCompanyInput = {
-  companyName: string; founderVision: string; locale?: Locale; selectedCeoAgentId: string;
-  permissionMode: string; assets: string[]; creationIdempotencyKey?: string;
+  founderVision: string;
+  creationIdempotencyKey?: string;
+  /** Removed from the Founder form. Kept optional while legacy test fixtures are retired. */
+  companyName?: string;
+  locale?: Locale;
+  selectedCeoAgentId?: string;
+  permissionMode?: string;
+  assets?: string[];
   executionMode?: "direct" | "mah";
   mahConfig?: { projectRoot: string; cliPath?: string; slotClass?: "background" | "interactive" };
 };
@@ -561,6 +567,29 @@ export type CreateCompanyResponse = {
   ceoReviewDecisions?: CeoReviewDecisionSummary[];
 };
 
+export type CompanyCreationReceipt = {
+  schemaVersion: 1;
+  kind: "company_creation_receipt";
+  company: CompanySummary;
+  createdAt: string;
+};
+
+export type CompanyProblem = {
+  schemaVersion: 1;
+  kind: "company_problem";
+  category: "installation_required" | "setup_required" | "try_again_later" | "plan_needs_new_attempt" | "work_stopped";
+  message: string;
+  availableActions: Array<{ kind: "download_mah"; url: string } | { kind: "recheck" } | { kind: "try_again" } | { kind: "new_attempt" }>;
+  company?: CompanySummary;
+};
+
+export class CompanyProblemError extends Error {
+  constructor(readonly problem: CompanyProblem) {
+    super(problem.message);
+    this.name = "CompanyProblemError";
+  }
+}
+
 export type ServerEvent = {
   type: string;
   companyId?: string;
@@ -577,36 +606,45 @@ export type ServerEvent = {
   artifactWorkspacePath?: string;
 };
 
-export type CompanyStateResponse = CreateCompanyResponse & {
-  keyResults?: KeyResultSummary[];
-  proof: ProofSummary[];
-  businessArtifacts?: BusinessArtifactSummary[];
-  ceoOfficeItems?: CeoOfficeItemSummary[];
-  founderReport?: FounderReportSummary;
-  finalFounderReport?: FinalFounderReportSummary | null;
-  finalFounderReportPreparing?: boolean;
-  supersededFinalFounderReports?: FinalFounderReportSummary[];
-  reviews: ReviewSummary[];
-  activity: ServerEvent[];
-  replanProposals: ReplanProposalSummary[];
-  taskProgressEvents?: TaskProgressEventSummary[];
-  taskCompletionEvents?: TaskCompletionEventSummary[];
-  visionGaps?: VisionGapSummary[];
-  humanActions?: HumanActionSummary[];
-  waitStates?: WaitStateSummary[];
-  founderDecisions?: FounderDecisionSummary[];
-  ceoAttentionRollups?: CeoAttentionRollupSummary[];
-  ceoIntakes?: CeoIntakeSummary[];
-  ceoReviewDecisions?: CeoReviewDecisionSummary[];
+export type CompanyStateResponse = {
+  schemaVersion: 1;
+  kind: "company_state";
+  lastEventSequence: number;
+  company: CompanySummary;
+  problem?: CompanyProblem | null;
+  departments: DepartmentSummary[];
+  objectives: ObjectiveSummary[];
+  assignments: DepartmentAssignmentSummary[];
+};
+
+export type DepartmentAssignmentSummary = {
+  id: string;
+  departmentId: string;
+  objectiveId: string;
+  title: string;
+  expectedOutcome: string;
+  dependsOnAssignmentIds: string[];
+  route: { kind: "ordinary_task" | "product_direction"; rationale: string };
+  order: number;
+  stage: string;
+  status: string;
+  directionKey?: string | null;
+  result?: {
+    resultSummary: string;
+    keyFindings: string[];
+    completedOutcome: string;
+    limitations: string[];
+    recommendedNextAction: string;
+  } | null;
 };
 
 export type ApiClient = {
   listAgents(): Promise<{ agents: AgentSummary[] }>;
   listCompanies(): Promise<{ companies: CompanyListItem[] }>;
-  createCompany(input: CreateCompanyInput): Promise<CreateCompanyResponse>;
+  createCompany(input: CreateCompanyInput): Promise<CompanyCreationReceipt | CreateCompanyResponse>;
   repairMahConnection(companyId: string, input: { projectRoot: string; cliPath?: string }): Promise<{company: CompanySummary}>;
-  retryCompanyCreation(companyId: string): Promise<CreateCompanyResponse>;
-  getCompanyState(companyId: string): Promise<CompanyStateResponse>;
+  retryCompanyCreation(companyId: string): Promise<CompanyStateResponse | CreateCompanyResponse>;
+  getCompanyState(companyId: string): Promise<CompanyStateResponse | CreateCompanyResponse>;
   createCeoIntake(companyId: string, input: { body: string }): Promise<{ intake: CeoIntakeSummary }>;
   /** Founder input to one department, assessed by that department's agent (ADR 0046). */
   createDepartmentIntake(companyId: string, departmentId: string, input: { body: string }): Promise<{ intake: CeoIntakeSummary }>;
@@ -668,7 +706,7 @@ export function createApiClient(baseUrl = "", options: { requestTimeoutMs?: numb
       return getJson(`${baseUrl}/api/companies`, requestTimeoutMs, hasCompanies);
     },
     async createCompany(input) {
-      return postJson(`${baseUrl}/api/companies`, input, requestTimeoutMs, hasCompanyState);
+      return postJson(`${baseUrl}/api/companies`, input, requestTimeoutMs, hasCompanyCreationReceipt);
     },
     async repairMahConnection(companyId, input) {
       return postJson(`${baseUrl}/api/companies/${companyId}/mah-connection`, input, requestTimeoutMs, hasCompany);
@@ -789,10 +827,21 @@ const hasTask: ResponseCheck = (body) =>
   isRecord(body) && isRecord(body.task) && typeof body.task.id === "string" && typeof body.task.status === "string" ? null : "task";
 const hasCompany: ResponseCheck = (body) => (isRecord(body) && hasCompanySummary(body.company) ? null : "company");
 const hasCompanies: ResponseCheck = (body) => (isRecord(body) && Array.isArray(body.companies) ? null : "companies");
+const hasCompanyCreationReceipt: ResponseCheck = (body) => {
+  if (!isRecord(body) || body.schemaVersion !== 1) return "schemaVersion";
+  if (body.kind !== "company_creation_receipt") return "kind";
+  if (!hasCompanySummary(body.company)) return "company";
+  if (typeof body.createdAt !== "string") return "createdAt";
+  return null;
+};
 const hasCompanyState: ResponseCheck = (body) => {
+  if (!isRecord(body) || body.schemaVersion !== 1) return "schemaVersion";
+  if (body.kind !== "company_state") return "kind";
   if (!isRecord(body) || !hasCompanySummary(body.company)) return "company";
+  if (typeof body.lastEventSequence !== "number") return "lastEventSequence";
+  if (!Array.isArray(body.objectives)) return "objectives";
   if (!Array.isArray(body.departments)) return "departments";
-  if (!Array.isArray(body.tasks)) return "tasks";
+  if (!Array.isArray(body.assignments)) return "assignments";
   return null;
 };
 
@@ -800,7 +849,7 @@ async function getJson<T>(url: string, timeoutMs: number, check?: ResponseCheck)
   const response = await fetchWithTimeout(url, undefined, timeoutMs);
 
   if (!response.ok) {
-    throw new Error(await formatRequestError(response));
+    throw await requestError(response);
   }
 
   return checkResponse(await parseJsonResponse<T>(response, url), url, check);
@@ -814,7 +863,7 @@ async function postJson<T>(url: string, body: unknown, timeoutMs: number, check?
   }, timeoutMs);
 
   if (!response.ok) {
-    throw new Error(await formatRequestError(response));
+    throw await requestError(response);
   }
 
   return checkResponse(await parseJsonResponse<T>(response, url), url, check);
@@ -865,13 +914,30 @@ async function fetchWithTimeout(url: string, init: RequestInit | undefined, time
   }
 }
 
-async function formatRequestError(response: Response): Promise<string> {
+async function requestError(response: Response): Promise<Error> {
   const fallback = `Request failed: ${response.status}`;
-
   try {
-    const body = (await response.json()) as { error?: unknown };
-    return typeof body.error === "string" && body.error.length > 0 ? body.error : fallback;
-  } catch {
-    return fallback;
+    const body = await response.json() as unknown;
+    if (isCompanyProblem(body)) return new CompanyProblemError(body);
+    return new Error(isRecord(body) && typeof body.error === "string" && body.error.length > 0 ? body.error : fallback);
+  } catch (error) {
+    if (error instanceof CompanyProblemError) return error;
+    return new Error(fallback);
   }
+}
+
+function isCompanyProblem(value: unknown): value is CompanyProblem {
+  const categories = ["installation_required", "setup_required", "try_again_later", "plan_needs_new_attempt", "work_stopped"];
+  return isRecord(value)
+    && value.schemaVersion === 1
+    && value.kind === "company_problem"
+    && typeof value.category === "string" && categories.includes(value.category)
+    && typeof value.message === "string"
+    && Array.isArray(value.availableActions)
+    && value.availableActions.every((action) => {
+      if (!isRecord(action) || typeof action.kind !== "string") return false;
+      if (["recheck", "try_again", "new_attempt"].includes(action.kind)) return Object.keys(action).length === 1;
+      if (action.kind !== "download_mah" || typeof action.url !== "string") return false;
+      try { return new URL(action.url).protocol === "https:"; } catch { return false; }
+    });
 }

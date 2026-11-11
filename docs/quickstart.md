@@ -31,15 +31,9 @@ From the project you want Cordantry to operate on:
 CORDANTRY_PORT=8787 pnpm --filter @cordantry/cli start
 ```
 
-The CLI creates `.cordantry/state.sqlite`, starts the local API server, detects Claude Code and Codex adapters, and prints the local server URL.
+The CLI creates `.cordantry/state.sqlite`, starts the local API server, validates MAH and prints the local server URL.
 
-Agent detection reports installation/compatibility, sign-in and available subscription quota. The creation form shows unavailable agents and reset times when known. Direct execution prefers your selected agent and automatically uses another compatible available agent when needed; task ownership remains unchanged and each run records its actual executor. If none can run, tasks wait. A confirmed quota or login outage can resume once another agent is available and the previous process has stopped, without using the task's failure allowance. Other Holds and execution budgets still apply.
-
-Detection uses short-lived cached status queries, not model turns. API-key/custom-provider accounts, unsupported usage endpoints and network errors show unknown quota; an installed unknown agent can run, but unknown status alone cannot clear its previously observed outage. Rechecking does not sign in, refresh credentials or buy extra usage.
-
-Choose the execution mode when creating a company. Direct dispatch is selected by default and uses the local CEO and scheduler. MAH coordination requires an existing managed project path and a MAH CLI executable; `CORDANTRY_MAH_CLI` supplies the default executable when omitted.
-
-MAH creation checks the project's identity and selected slot before saving. The slot defaults to `background`; explicitly select `interactive` in the advanced options if needed. Company mode and project identity cannot be changed after creation. MAH availability does not block runtime startup or Direct companies, and failed MAH tasks never silently fall back to Direct dispatch.
+Set `CORDANTRY_MAH_PROJECT_ROOT` to the MAH project root before company creation. Cordantry resolves `mah` from `PATH` unless runtime configuration supplies another executable. Company planning and ordinary Assignment execution use MAH. They do not fall back to a local Codex or Claude Code planning bridge.
 
 Future package usage is intended to be:
 
@@ -75,21 +69,22 @@ http://127.0.0.1:5173/?apiUrl=http%3A%2F%2F127.0.0.1%3A8787
 
 1. Start the local runtime.
 2. Open the dashboard.
-3. Enter a company name and choose Direct dispatch (default) or MAH coordination.
-4. Continue to agent detection and choose one detected CEO agent. Claude Code is the recommended first CEO Agent on this machine; Codex may require local permissions.
-5. Enter a founder vision.
-6. For MAH coordination, provide the managed project and CLI paths, and select a slot if the default background slot is unsuitable.
-7. Click Create Company and wait on the CRT-styled creation loading page.
-8. Land in the Department Workspace with CEO selected by default.
-9. Use the left rail to inspect generated departments and their queued tasks.
-10. Use the Work menu to open the operating dashboard for task, proof, review, and event views.
-11. Use the kill switch if work must stop immediately.
+3. Enter the Founder Vision.
+4. Select Create Company.
+5. Wait while Cordantry shows the six company planning steps.
+6. Open CEO Office when the Company becomes active.
+7. Use the Plan page to inspect objectives, Departments, Assignments and dependencies.
+8. Open a Department to inspect its Assignment Cards.
+9. Use Company Status to review waits and available actions.
+10. Use Pause Company to stop new Assignment submission. Use Stop Company only when the Company must end.
+
+`CORDANTRY_MAH_PROJECT_ROOT` supplies the MAH project. The company form does not ask for a project path, CLI path, slot or Agent. If MAH is not installed, select Download MAH. It opens `https://mah.bot/download` by default. Install MAH, return to Cordantry and select Recheck. Cordantry continues the same Company creation.
 
 ## Troubleshooting
 
-If the CEO selection step shows `Local API is not connected`, make sure the local runtime is still running and that `VITE_CORDANTRY_API_URL` points at the API server URL printed by the CLI.
+If the Dashboard cannot connect, make sure the local runtime is still running. Confirm that `VITE_CORDANTRY_API_URL` points at the API server URL printed by the CLI.
 
-If company creation returns a CEO Agent timeout or blueprint error, retry with a smaller founder vision, confirm the selected local agent can run from the terminal, and consider increasing `CORDANTRY_AGENT_TIMEOUT_MS` when starting the runtime.
+If Cordantry says that MAH is not installed, use Download MAH and follow the installation steps. If MAH needs setup, finish MAH setup and select Recheck. If MAH is temporarily unavailable, keep the saved Vision and try again later.
 
 ## Supported Agents
 
