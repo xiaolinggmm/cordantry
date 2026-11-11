@@ -5,10 +5,16 @@ export type MahCompanyPlanningState = "prepared" | "submitting" | "submitted" | 
 export type MahCompanyPlanning = {
   companyId: string;
   mahTaskId: string;
+  activeTaskId?: string;
+  taskLineage?: string[];
+  correctionCount?: number;
   projectRoot: string;
   requestDigest: string;
   state: MahCompanyPlanningState;
   detail: string;
+  submitCount: number;
+  taskNotFoundCount: number;
+  reconciliationDeadline: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -31,6 +37,9 @@ export function createMahCompanyPlanningStore(database: DatabaseClient) {
       const next = { ...record, state: "submitting" as const, updatedAt: new Date().toISOString() };
       return database.prepare("UPDATE mah_company_planning SET record = ?, state = 'submitting' WHERE company_id = ? AND state = 'prepared'")
         .run(JSON.stringify(next), companyId).changes === 1;
+    },
+    remove(companyId: string): void {
+      database.prepare("DELETE FROM mah_company_planning WHERE company_id = ?").run(companyId);
     },
   };
 }

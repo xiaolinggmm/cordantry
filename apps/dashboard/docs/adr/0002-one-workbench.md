@@ -1,6 +1,6 @@
 # One Workbench Replaces Three Company Pages
 
-Status: proposed
+Status: accepted
 
 After creation, the founder works in one Workbench. It has a left rail and three-column pages. It replaces Department Workspace, Company Operating Dashboard and Company Operations. The layout of CEO Office was chosen from three prototypes on the `prototype/ceo-office-layout` branch: conversation, three-column and inbox. The three-column layout won, because the things that need the founder stay in view while the conversation with the CEO stays central.
 
@@ -15,12 +15,12 @@ The three legacy pages overlapped. Counts of blocked work, Human Actions and Wai
 - **Left rail**, from top to bottom:
   - company name and status;
   - CEO Office;
-  - each department, with its agent's icon, its pending count, and the agents working in it now;
-  - Operations Diagnostics, Deliverables and Settings.
-- **Header**: current location, Pause Operating or Resume Operating, and a quick language switch.
+  - each department, with its name and Founder action count;
+  - Company Status, Deliverables and Settings.
+- **Header**: current location, Pause Company or Resume Company, and a quick language switch.
 - **Removed**: the menu bar, the command palette, fullscreen, skins and CRT. Commands move to the rail, the header or Settings. The Agents menu and the manual Load Proof and Load Review commands go away, because Deliverables loads by itself.
 - **Settings**:
-  - the current company, with its status and Stop Operating, confirmed by typing the name;
+  - the current company, with its status and Stop Company, confirmed by typing the name;
   - all companies, with switching and Create New Company. The Onboarding Wizard opens with a Cancel button when a company already exists;
   - the interface language.
 - **Startup**: the app opens the last company, then the most recently updated `active` company, then the Onboarding Wizard when no company exists. There is no company picker page.
@@ -29,38 +29,30 @@ The three legacy pages overlapped. Counts of blocked work, Human Actions and Wai
 
 - **Center column**, with tabs:
   - **Timeline**: today's CEO Office Items. Each item links to its department page.
-  - **Plan**: a React Flow canvas. Tasks are laid out left to right in dependency order, each marked with a small dot in its department's color. It can be panned and zoomed.
+  - **Plan**: a React Flow canvas. It shows objectives, Departments and Assignments. Assignments follow Company Plan `order` and show business dependencies, status and Direction grouping. It can be panned and zoomed. It does not show MAH Tasks, Work Queue objects or execution traces.
   - **Outcomes**: every outcome card, the same cards that are posted into the timeline as each outcome completes. A stopped company opens on this tab, with the Final Founder Report pinned first.
 - **Composer**: docked at the bottom of the center column. It is text only.
 - **Right column, "Needs you"**: overview counts, then the cards for reviews, decisions, Human Actions and new plans. On narrow screens it becomes a collapsible section above the timeline.
 
 **Department page (three columns)**
 
-- **Header**: the department's responsibility, and its working agents with icon, current activity and elapsed time.
-- **Center column**: each task as an Execution Trace:
-  - the plan, which is the Execution Brief;
-  - step conclusions;
-  - tool calls with their results;
-  - the final result.
-
-  Hidden model reasoning is never shown. Replan is requested, reviewed and confirmed here. CEO Office shows a "Needs you" card that links to it, so `confirm_replan` moves from the Operations surface to this page.
+- **Header**: the Department responsibility in Founder-facing Plain Language.
+- **Center column**: each Department Assignment as an Assignment Card. The card shows the title, expected outcome, Assignment Business Status, Assignment Stage, upstream dependencies, accepted result and available Founder action. A completed card shows the result summary, key findings, completed outcome, limitations, recommended next action and a plain-language explanation of what supports the result. It does not show an Agent, MAH Task, Attempt, Session, tool call, raw log, internal code or internal evidence reference.
+- **Assignment order**: actionable Assignments first. Within one status, cards use the Company Plan `order`. Completed and stopped cards follow active work. Dependencies use business titles, not IDs. Display order does not change business priority.
 - **Department composer**: sends a Department Intake (root ADR 0046).
 - **Right column**: this department's "Needs you" items.
 
-**Execution Trace interaction**
+**Assignment Card interaction**
 
-- A running run is expanded and updates live.
-- The trace collapses only after the final result is settled, that is, when the server has checked the delivery and the task has left `running`. Then a summary line remains, such as "Completed · 5 steps", and the final result stays expanded.
-- A failed or cancelled run does not collapse. It opens at the failing step, under a one-line error summary.
-- A manual expand or collapse holds for as long as the page is open. Live updates never reset it, and a reload restores the default behavior.
-- Only the latest run is shown in full. Earlier runs are one line each, with their outcome, and can be opened.
-- Until root ADR 0047 lands, the trace shows only the runtime's progress steps.
+- A running Assignment Card updates its business status and stage.
+- A completed card keeps the accepted business result visible.
+- A stopped card shows one plain-language reason and available business actions.
+- A card does not show runs, steps, retries, MAH Tasks or raw logs.
 
 **Visual language**
 
 - **Task and company status colors** follow the Ice Mist color system, section 6 ([`docs/design/color-system.md`](../../../../docs/design/color-system.md)), which replaced the earlier palette on 2026-10-14. Color says state only: review and needs-you share charcoal "your turn" and differ by icon and text, paused and stopped are neutral, and amber is not used.
-- **Raw codes and execution details** (phase, health, budget, stop reason) are collapsed under "Details" below a plain sentence.
-- **Agent icons** come from Simple Icons. An agent without an icon shows a generic bot icon with its initials.
+- **Internal codes and execution details** never appear in the Founder Workbench. Internal diagnostic interfaces retain them outside the Founder UI.
 - **Copy** follows root ADR 0045.
 
 **User terms**: internal terms are never shown. These are the founder words:
@@ -74,14 +66,14 @@ The three legacy pages overlapped. Counts of blocked work, Human Actions and Wai
 | Replan Proposal | 新计划 / new plan |
 | Wait State | 在等待 + what it waits for / waiting for … |
 | Evidence surface | 交付物 / Deliverables |
-| Operations surface | 运营诊断 / Operations Diagnostics |
+| Company Status | 公司状态 / Company Status |
 | Hold, Affordance, Envelope | never shown |
 
 **Delivery**
 
 - The order is:
   1. P1, a refactor with no visual change, together with root ADR 0044;
-  2. P2: the shell, Settings, Operations Diagnostics and Deliverables;
+  2. P2: the shell, Settings, Company Status and Deliverables;
   3. P4 CEO Office, together with root ADR 0046 for CEO Intake;
   4. P4 department pages, together with Department Intake;
   5. P5, which removes CRT, skins, Retro UI and legacy CSS, together with root ADR 0047.
@@ -90,8 +82,8 @@ The three legacy pages overlapped. Counts of blocked work, Human Actions and Wai
   - The modern shell frames CEO Office and the department pages, whose content stays Retro UI until P4. Each page is either all legacy or all modern; the shell is a frame around them, and it has no CRT.
   - CRT, skins and fullscreen were removed in P2, ahead of P5. One fixed palette remains for the Retro components that P4 replaces.
   - Two keyboard shortcuts remain, Cmd+Enter in the Onboarding Wizard and Shift+Cmd+K for Pause and Resume, and both read the shared command model. The menu shortcuts went with the menu.
-  - The Operating Dashboard was removed in P2. Its proof and reviews moved to Deliverables, and its task states moved to Operations Diagnostics.
-  - New plans are requested and confirmed on Operations Diagnostics until P4 moves them to the department page.
+  - The Operating Dashboard was removed in P2. Its proof and reviews moved to Deliverables, and its business state moved to Company Status.
+  - New plans are requested and confirmed on Company Status until P4 moves them to the department page.
   - At startup, with no remembered company, companies are ranked by status (`active`, `paused`, `creating`, `stopped`, then `creation_failed`) and then by most recent update. The Onboarding Wizard opens only when there is no company.
   - A failed creation is never a dead end. Its page offers Stop and abandon, confirmed by the company name, and a way back to another company, or Create New Company when there is none.
 - P4 CEO Office delivered, as the founder decided on 2026-10-13:
@@ -100,23 +92,23 @@ The three legacy pages overlapped. Counts of blocked work, Human Actions and Wai
   - The plan card names the goals and key results. The Plan tab shows them above the canvas, and a card is posted when a key result is met (root ADR 0048). The Outcomes tab lists what is still missing from the vision.
   - The Chinese name of CEO Office is "CEO 办公室".
   - A card opens the item in a dialog, which is the one place to act on it. Timeline cards and "Needs you" cards open the same dialog.
-  - A new plan card links to Operations Diagnostics until the department page takes new plans.
+  - A new plan card links to Company Status until the department page takes new plans.
   - Business content is shown in the company locale. The interface language changes only the chrome (root ADR 0013).
   - The founder's own message and the CEO's answer are their own timeline cards (root ADR 0046).
   - The Founder Vision is shown once, above the tabs.
-- P4 department pages delivered, as the founder decided on 2026-10-13:
-  - A trace stays open until its result is settled; a waiting task's trace is open too. A settled trace folds to "status · N steps" and keeps its result in view.
-  - Department subtasks show inside their parent's trace with their status and actions.
-  - A task's wait shows on its trace as "Waiting: reason, next check".
-  - New plans are requested, reviewed and confirmed on the task's trace. Operations Diagnostics no longer lists them, and CEO Office's new plan cards open the task on its department page.
-  - The department's "Needs you" is the CEO Office list filtered to the department.
-  - The answers to a Department Intake are cards under the traces.
-  - No Retro component, theme or CSS rule is left. The legacy element rules and tokens in `styles.css` remain for P5.
+- P4 department pages delivered, as the founder decided on 2026-10-13. The Company Plan cutover replaces their old Task traces with Assignment Cards. New plan items open the related Assignment. The department's "Needs you" list is the CEO Office list filtered to that Department.
 - P5 legacy CSS removed on 2026-10-14:
   - `styles.css` no longer uppercases buttons and headings, sizes headings or squares off controls, and the legacy tokens are gone. Every heading sets its own size and line height, so the `modern-dashboard-shell` opt-out and the `normal-case` classes went with them.
   - Every focusable element shows the Ice Mist focus ring unless it styles its own focus. The legacy focus rule read tokens that no longer existed, so it removed focus outlines altogether.
   - Root ADR 0047, the agent execution trace, is still to come.
 - The P4 steps run on a short-lived branch that is rebased often and merged once, so no page is delivered half legacy and half modern (ADR 0001).
+
+**Company Plan cutover verification**
+
+- Verify Chinese desktop, English desktop and Chinese narrow-screen layouts in a real browser.
+- Verify basic keyboard navigation and screen-reader names.
+- Cover Creation Loading, Department navigation, Assignment Cards, Company Status, MAH installation guidance and restart recovery.
+- Confirm that no Founder surface shows an internal code, raw enum, MAH object, internal identifier, stack trace or raw log.
 
 ## Considered Options
 

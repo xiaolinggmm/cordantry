@@ -37,7 +37,7 @@ import type {
 import type { CompleteLocalizedText, Locale, LocalizedText } from "@cordantry/core";
 import { companyPlanSchema, isLocale, localizedTextFromString, projectCeoOfficeItems } from "@cordantry/core";
 import type { AgentAdapter } from "../adapters/types";
-import type { createRepositories, ReviewRecord } from "../db/repositories";
+import type { createRepositories, ReviewRecord, StoredCompanyProblem } from "../db/repositories";
 import { EventStream } from "../events/sse";
 import type { PolicyMode } from "../policies/policy";
 import { generateCompanyBlueprint, writeCompanyBlueprintRecords } from "../runtime/createCompany";
@@ -74,7 +74,6 @@ import {
   summarizeFounderReport,
 } from "../runtime/founderReportProjection";
 import { createProjectRuntimeActionChannel } from "../runtime/runtimeActionChannel";
-import { createLocalCompanyPlanProvider } from "../runtime/localCompanyPlan";
 import { serveDashboardFile } from "./staticDashboard";
 
 export type ApiServerOptions = {
@@ -226,8 +225,8 @@ async function routeRequest(
 
   if (method === "POST" && url.pathname === "/api/companies") {
     const rawBody = await readJson<Record<string, unknown>>(request);
-    if (Object.keys(rawBody).every((key) => key === "founderVision")) {
-      await acceptCompanyPlanning(response, options, rawBody.founderVision);
+    if (Object.keys(rawBody).every((key) => key === "founderVision" || key === "creationIdempotencyKey")) {
+      await acceptCompanyPlanning(response, options, rawBody);
       return;
     }
     const body = rawBody as unknown as {
@@ -371,6 +370,26 @@ async function routeRequest(
       }
       return;
     }
+    if (operation === "stop" && usesCompanyPlanModel(result.company)) {
+      const assignments = options.repositories.listDepartmentAssignments(companyId);
+      options.repositories.transaction(() => {
+        for (const assignment of assignments) {
+          if (["waiting", "ready"].includes(assignment.status)) {
+            options.repositories.updateDepartmentAssignment(assignment.id, { status: "stopped", stage: assignment.stage });
+          }
+        }
+      });
+      const command = options.mahCommand ?? mahCommand();
+      for (const assignment of assignments.filter((candidate) => candidate.status === "in_progress")) {
+        const binding = options.repositories.assignmentExecution.getBinding(assignment.id);
+        if (!binding) continue;
+        try {
+          await command(["task", "cancel", binding.mahTaskId, "--cwd", binding.projectRoot, "--format", "json"]);
+        } catch {
+          // A cancellation request is not terminal proof. The coordinator keeps reading this Task.
+        }
+      }
+    }
     if (operation === "resume") options.requestSchedulerWake?.("company_resumed");
     sendJson(response, 200, usesCompanyPlanModel(result.company)
       ? { company: publicPlannedCompany(result.company) }
@@ -390,6 +409,22 @@ async function routeRequest(
 
     if (company.status !== "creation_failed") {
       sendJson(response, 409, { error: "Only failed Company Creation can be retried." });
+      return;
+    }
+
+    if (usesCompanyPlanModel(company)) {
+      if (!options.companyPlanProvider) {
+        sendMahInstallationProblem(response, company, options.repositories);
+        return;
+      }
+      const problem = options.repositories.getCompanyProblem(company.id);
+      if (problem?.category === "plan_needs_new_attempt") options.repositories.mahCompanyPlanning.remove(company.id);
+      options.repositories.clearCompanyProblem(company.id);
+      const updatedAt = (options.now ?? (() => new Date()))().toISOString();
+      options.repositories.updateCompanyStatus(company.id, "creating", updatedAt);
+      const creating: Company = { ...company, status: "creating", updatedAt };
+      scheduleCompanyPlanningCompletion(options, creating, options.companyPlanProvider);
+      sendJson(response, 202, buildCompanyPlanningState(creating, options.repositories));
       return;
     }
 
@@ -1351,26 +1386,41 @@ async function routeRequest(
 async function acceptCompanyPlanning(
   response: ServerResponse,
   options: ApiServerOptions,
-  founderVisionValue: unknown,
+  body: Record<string, unknown>,
 ): Promise<void> {
-  const founderVision = typeof founderVisionValue === "string" ? founderVisionValue.trim() : "";
+  const founderVision = typeof body.founderVision === "string" ? body.founderVision.trim() : "";
   if (!founderVision) {
     sendJson(response, 400, { error: "Founder vision is required." });
     return;
   }
-  let companyPlanProvider = options.companyPlanProvider;
-  let planningAgentId = "mah";
-  let executionMode: Company["executionMode"] = "mah";
-  if (!companyPlanProvider) {
-    const localAgent = await selectAvailableAgent(options.agents, options.agents[0]?.id ?? "");
-    if (localAgent) {
-      companyPlanProvider = createLocalCompanyPlanProvider(localAgent);
-      planningAgentId = localAgent.id;
-      executionMode = "direct";
+  const companyPlanProvider = options.companyPlanProvider;
+
+  const creationIdempotencyKey = typeof body.creationIdempotencyKey === "string" && body.creationIdempotencyKey.trim()
+    ? body.creationIdempotencyKey.trim()
+    : createRouteId(options, "creation_key");
+  const creationInput = { founderVision };
+  const existing = options.repositories.getCompanyByCreationIdempotencyKey(creationIdempotencyKey);
+  if (existing) {
+    if (JSON.stringify(existing.creationInput) !== JSON.stringify(creationInput)) {
+      sendJson(response, 409, {
+        schemaVersion: 1,
+        kind: "company_problem",
+        category: "plan_needs_new_attempt",
+        message: "This creation request already belongs to a different Founder Vision.",
+        availableActions: [],
+      });
+      return;
     }
-  }
-  if (!companyPlanProvider) {
-    sendJson(response, 503, { error: "Company planning is not available." });
+    if (!companyPlanProvider) {
+      sendMahInstallationProblem(response, existing, options.repositories);
+      return;
+    }
+    sendJson(response, 202, {
+      schemaVersion: 1,
+      kind: "company_creation_receipt",
+      company: publicPlannedCompany(existing),
+      createdAt: existing.createdAt,
+    });
     return;
   }
 
@@ -1381,20 +1431,73 @@ async function acceptCompanyPlanning(
     name: "Planning company",
     founderVision,
     locale: "en",
-    selectedCeoAgentId: planningAgentId,
-    playbookId: executionMode === "mah" ? "mah-company-plan" : "local-company-plan",
+    selectedCeoAgentId: "mah",
+    playbookId: "mah-company-plan",
     permissionMode: null,
-    executionMode,
+    executionMode: "mah",
     mahConfig: null,
     status: "creating",
+    creationIdempotencyKey,
+    creationInput,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
   options.repositories.createCompany(company);
+  appendCompanyPlanningEvent(options, company, "creation_request_accepted");
+
+  if (!companyPlanProvider) {
+    options.repositories.updateCompanyStatus(company.id, "creation_failed", timestamp);
+    sendMahInstallationProblem(response, { ...company, status: "creation_failed" }, options.repositories);
+    return;
+  }
 
   scheduleCompanyPlanningCompletion(options, company, companyPlanProvider);
 
-  sendJson(response, 202, { company: publicPlannedCompany(company) });
+  sendJson(response, 202, {
+    schemaVersion: 1,
+    kind: "company_creation_receipt",
+    company: publicPlannedCompany(company),
+    createdAt: company.createdAt,
+  });
+}
+
+function sendMahInstallationProblem(response: ServerResponse, company: Company, repositories: ReturnType<typeof createRepositories>): void {
+  const problem = companyProblem("installation_required");
+  repositories.saveCompanyProblem(company.id, problem);
+  sendJson(response, 503, {
+    ...problem,
+    company: publicPlannedCompany(company),
+  });
+}
+
+function companyProblem(category: StoredCompanyProblem["category"]): StoredCompanyProblem {
+  const definitions: Record<StoredCompanyProblem["category"], Pick<StoredCompanyProblem, "message" | "availableActions">> = {
+    installation_required: {
+      message: "Cordantry needs MAH to create your company plan. Download and install MAH first.",
+      availableActions: [{ kind: "download_mah", url: trustedMahInstallUrl() }, { kind: "recheck" }],
+    },
+    setup_required: { message: "MAH needs setup before company planning can continue.", availableActions: [{ kind: "recheck" }] },
+    try_again_later: { message: "Company planning is temporarily unavailable. Your vision is saved.", availableActions: [{ kind: "try_again" }] },
+    plan_needs_new_attempt: { message: "The company plan could not be validated. Start a new planning attempt when ready.", availableActions: [{ kind: "new_attempt" }] },
+    work_stopped: { message: "Company planning stopped.", availableActions: [] },
+  };
+  return {
+    schemaVersion: 1,
+    kind: "company_problem",
+    category,
+    ...definitions[category],
+  };
+}
+
+function trustedMahInstallUrl(): string {
+  const configured = process.env.CORDANTRY_MAH_INSTALL_URL?.trim();
+  if (!configured) return "https://mah.bot/download";
+  try {
+    const url = new URL(configured);
+    return url.protocol === "https:" ? url.toString() : "https://mah.bot/download";
+  } catch {
+    return "https://mah.bot/download";
+  }
 }
 
 function resumeInterruptedMahCompanyPlanning(options: ApiServerOptions): void {
@@ -1417,7 +1520,15 @@ function scheduleCompanyPlanningCompletion(
   setTimeout(() => {
     void completeCompanyPlanning({ options, company, companyPlanProvider }).catch(() => {
       options.log?.("Company planning failed validation or artifact import.");
-      options.repositories.updateCompanyStatus(company.id, "creation_failed", new Date().toISOString());
+      const planning = options.repositories.mahCompanyPlanning.get(company.id);
+      const category = planning?.state === "failed" || (planning?.correctionCount ?? 0) >= 2
+        ? "plan_needs_new_attempt"
+        : "try_again_later";
+      const problem = planning?.detail.includes("admission deadline expired")
+        ? { ...companyProblem("try_again_later"), message: "Cordantry is still checking the original planning request.", availableActions: [{ kind: "recheck" } as const] }
+        : companyProblem(category);
+      options.repositories.saveCompanyProblem(company.id, problem);
+      options.repositories.updateCompanyStatus(company.id, "creation_failed", (options.now ?? (() => new Date()))().toISOString());
     });
   }, 0);
 }
@@ -1427,14 +1538,19 @@ async function completeCompanyPlanning(input: {
   company: Company;
   companyPlanProvider: CompanyPlanProvider;
 }): Promise<void> {
-  const plan = companyPlanSchema.parse(await input.companyPlanProvider({
+  appendCompanyPlanningEvent(input.options, input.company, "plan_requested");
+  const rawPlan = await input.companyPlanProvider({
     companyId: input.company.id,
     founderVision: input.company.founderVision,
     projectRoot: input.options.projectRoot,
-  }));
+  });
+  appendCompanyPlanningEvent(input.options, input.company, "artifact_received");
+  const plan = companyPlanSchema.parse(rawPlan);
+  appendCompanyPlanningEvent(input.options, input.company, "plan_validated");
   const activatedAt = (input.options.now ?? (() => new Date()))().toISOString();
 
   input.options.repositories.transaction(() => {
+    input.options.repositories.clearCompanyProblem(input.company.id);
     plan.objectives.forEach((objective, priority) => input.options.repositories.createObjective({
       id: objective.id,
       companyId: input.company.id,
@@ -1453,8 +1569,43 @@ async function completeCompanyPlanning(input: {
     plan.assignments.forEach((assignment) => input.options.repositories.createDepartmentAssignment({
       ...assignment,
       companyId: input.company.id,
+      status: assignment.route.kind === "ordinary_task" && assignment.dependsOnAssignmentIds.length === 0 ? "ready" : "waiting",
+      directionKey: assignment.directionKey ?? null,
     }));
+    appendCompanyPlanningEvent(input.options, input.company, "organization_created");
     input.options.repositories.activatePlannedCompany(input.company.id, plan.company.name, activatedAt);
+    appendCompanyPlanningEvent(input.options, { ...input.company, status: "active" }, "company_ready");
+  });
+}
+
+function appendCompanyPlanningEvent(
+  options: ApiServerOptions,
+  company: Company,
+  kind: "creation_request_accepted" | "plan_requested" | "artifact_received" | "plan_validated" | "organization_created" | "company_ready",
+): void {
+  const existing = options.repositories.listCompanyEventsForCompany(company.id);
+  if (existing.some((event) => event.kind === kind)) return;
+  const occurredAt = (options.now ?? (() => new Date()))().toISOString();
+  const messages = {
+    creation_request_accepted: "Your vision is saved.",
+    plan_requested: "Cordantry is preparing your company plan.",
+    artifact_received: "Cordantry received your company plan.",
+    plan_validated: "Cordantry confirmed the plan content.",
+    organization_created: "Cordantry created the departments and work plan.",
+    company_ready: "Your company is ready.",
+  } as const;
+  options.repositories.appendCompanyEvent({
+    id: createRouteId(options, "company_event"),
+    companyId: company.id,
+    type: kind,
+    kind,
+    sequence: Math.max(0, ...existing.map((event) => event.sequence ?? 0)) + 1,
+    occurredAt,
+    createdAt: occurredAt,
+    message: messages[kind],
+    messageText: localizedTextFromString(messages[kind]),
+    status: kind === "company_ready" ? "active" : "creating",
+    businessPayload: { companyId: company.id },
   });
 }
 
@@ -1470,7 +1621,7 @@ function publicPlannedCompany(company: Company) {
 }
 
 function usesCompanyPlanModel(company: Company): boolean {
-  return company.playbookId === "mah-company-plan" || company.playbookId === "local-company-plan";
+  return company.playbookId === "mah-company-plan";
 }
 
 function buildCompanyPlanningState(
@@ -1478,18 +1629,36 @@ function buildCompanyPlanningState(
   repositories: ReturnType<typeof createRepositories>,
 ) {
   return {
+    schemaVersion: 1,
+    kind: "company_state",
+    lastEventSequence: Math.max(0, ...repositories.listCompanyEventsForCompany(company.id).map((event) => event.sequence ?? 0)),
     company: publicPlannedCompany(company),
+    problem: repositories.getCompanyProblem(company.id),
     departments: repositories.listDepartments(company.id).map(({ id, name, responsibility }) => ({ id, name, responsibility })),
     objectives: repositories.listObjectives(company.id).map(({ id, title, status, priority }) => ({ id, title, status, priority })),
-    assignments: repositories.listDepartmentAssignments(company.id).map((assignment) => ({
-      id: assignment.id,
-      departmentId: assignment.departmentId,
-      objectiveId: assignment.objectiveId,
-      title: assignment.title,
-      expectedOutcome: assignment.expectedOutcome,
-      dependsOnAssignmentIds: assignment.dependsOnAssignmentIds,
-      route: assignment.route,
-    })),
+    assignments: repositories.listDepartmentAssignments(company.id).map((assignment) => {
+      const accepted = repositories.assignmentExecution.getResult(assignment.id)?.result;
+      return {
+        id: assignment.id,
+        departmentId: assignment.departmentId,
+        objectiveId: assignment.objectiveId,
+        title: assignment.title,
+        expectedOutcome: assignment.expectedOutcome,
+        dependsOnAssignmentIds: assignment.dependsOnAssignmentIds,
+        route: assignment.route,
+        order: assignment.order,
+        stage: assignment.stage,
+        status: assignment.status,
+        directionKey: assignment.directionKey ?? null,
+        result: accepted ? {
+          resultSummary: accepted.resultSummary,
+          keyFindings: accepted.keyFindings,
+          completedOutcome: accepted.completedOutcome,
+          limitations: accepted.limitations,
+          recommendedNextAction: accepted.recommendedNextAction,
+        } : null,
+      };
+    }),
   };
 }
 

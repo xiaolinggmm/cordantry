@@ -3,6 +3,7 @@ import { ExecutionActionsContext } from "./ui/tasks/TaskExecutionPanel";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   createApiClient,
+  CompanyProblemError,
   type AgentSummary,
   type ApiClient,
   type BusinessArtifactSummary,
@@ -10,6 +11,9 @@ import {
   type CeoOfficeItemSummary,
   type CompanyEventSummary,
   type CompanyListItem,
+  type CompanyProblem,
+  type CompanyCreationReceipt,
+  type CompanyStateResponse,
   type CreateCompanyResponse,
   type FounderDecisionSummary,
   type HumanActionSummary,
@@ -40,6 +44,7 @@ import { CeoOffice } from "./pages/CeoOffice";
 import { DepartmentPage } from "./pages/DepartmentPage";
 import { Onboarding } from "./pages/Onboarding";
 import { OperationsDiagnostics } from "./pages/OperationsDiagnostics";
+import { PlannedCompany } from "./pages/PlannedCompany";
 import { Settings } from "./pages/Settings";
 import { isLanguageId, LanguageProvider, readCurrentLanguage, type LanguageId } from "./ui/language";
 import "./styles.css";
@@ -47,6 +52,14 @@ import "./styles.css";
 export type AppProps = {
   apiClient?: ApiClient;
 };
+
+function isCompanyStateResponse(response: CreateCompanyResponse | CompanyStateResponse): response is CompanyStateResponse {
+  return "kind" in response && response.kind === "company_state";
+}
+
+function isCompanyCreationReceipt(response: CreateCompanyResponse | CompanyCreationReceipt): response is CompanyCreationReceipt {
+  return "kind" in response && response.kind === "company_creation_receipt";
+}
 
 type AgentLoadState = "idle" | "loading" | "ready" | "failed";
 type CompanyListLoadState = "loading" | "ready" | "failed";
@@ -64,14 +77,16 @@ export default function App({ apiClient }: AppProps) {
   const [agentLoadState, setAgentLoadState] = useState<AgentLoadState>("idle");
   const permissionMode = "balanced";
   const [blueprint, setBlueprint] = useState<CreateCompanyResponse | null>(null);
+  const [plannedState, setPlannedState] = useState<CompanyStateResponse | null>(null);
   // Read by the event-stream callbacks, which outlive the render that subscribed them: the stream
   // stays open across view changes, because events published while it reconnects are lost.
   const companyStatusRef = useRef<string | null>(null);
-  companyStatusRef.current = blueprint?.company.status ?? null;
+  companyStatusRef.current = plannedState?.company.status ?? blueprint?.company.status ?? null;
   const companyIdRef = useRef<string | null>(null);
-  companyIdRef.current = blueprint?.company.id ?? null;
+  companyIdRef.current = plannedState?.company.id ?? blueprint?.company.id ?? null;
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [companyProblem, setCompanyProblem] = useState<CompanyProblem | null>(null);
   const [events, setEvents] = useState<ServerEvent[]>([]);
   const [creationEvents, setCreationEvents] = useState<CompanyEventSummary[]>([]);
   const [taskProgressEvents, setTaskProgressEvents] = useState<TaskProgressEventSummary[]>([]);
@@ -222,7 +237,16 @@ export default function App({ apiClient }: AppProps) {
   }
 
   /** Adopts a company snapshot. Creation shows its own page; a created company opens its Workbench. */
-  function applyCompanyState(response: CreateCompanyResponse, nextLocation: WorkbenchLocation = locationRef.current, holdCompletedCreation = false) {
+  function applyCompanyState(response: CreateCompanyResponse | CompanyStateResponse, nextLocation: WorkbenchLocation = locationRef.current, holdCompletedCreation = false) {
+    if (isCompanyStateResponse(response)) {
+      setPlannedState(response);
+      setBlueprint(null);
+      writeCurrentCompanyId(response.company.id);
+      if (response.company.status !== "creating") clearCreationIdempotencyKey();
+      setView(response.company.status === "creating" || response.company.status === "creation_failed" ? "creating" : "workbench");
+      return;
+    }
+    setPlannedState(null);
     setBlueprint(response);
     setProof(response.proof ?? []);
     setBusinessArtifacts(response.businessArtifacts ?? []);
@@ -292,6 +316,7 @@ export default function App({ apiClient }: AppProps) {
       .getCompanyState(companyId)
       .then((response) => {
         if (cancelled) return;
+        if (isCompanyStateResponse(response)) return;
         setProof(response.proof ?? []);
         setBusinessArtifacts(response.businessArtifacts ?? []);
         setReviews(response.reviews ?? []);
@@ -347,7 +372,8 @@ export default function App({ apiClient }: AppProps) {
             if (["task_review", "company_creation_completed", "company_creation_failed", "company_report_ready"].includes(event.type)) {
               applyCompanyState(response, event.type.startsWith("company_creation_") ? ceoOfficeLocation : locationRef.current, event.type === "company_creation_completed");
             } else {
-              adoptBusinessProjection(response);
+              if (isCompanyStateResponse(response)) applyCompanyState(response);
+              else adoptBusinessProjection(response);
             }
           })
           .catch(() => undefined);
@@ -409,6 +435,7 @@ export default function App({ apiClient }: AppProps) {
     if (isCreating) return;
     setIsCreating(true);
     setCreateError(null);
+    setCompanyProblem(null);
     let key = window.localStorage.getItem(creationIdempotencyKeyStorageKey);
     if (!key) {
       key = crypto.randomUUID();
@@ -417,11 +444,27 @@ export default function App({ apiClient }: AppProps) {
     try {
       const response = await client.createCompany({...input, creationIdempotencyKey: key});
       window.sessionStorage.removeItem("cordantry.onboardingDraft");
-      clearCreationIdempotencyKey();
       setReturnCompanyId(null);
       setReviewOnboarding(false);
-      applyCompanyState(response, ceoOfficeLocation);
+      if (isCompanyCreationReceipt(response)) {
+        writeCurrentCompanyId(response.company.id);
+        applyCompanyState(await client.getCompanyState(response.company.id), ceoOfficeLocation);
+      } else {
+        clearCreationIdempotencyKey();
+        applyCompanyState(response, ceoOfficeLocation);
+      }
     } catch (error) {
+      if (error instanceof CompanyProblemError) {
+        setCompanyProblem(error.problem);
+        if (error.problem.company) {
+          writeCurrentCompanyId(error.problem.company.id);
+          try {
+            applyCompanyState(await client.getCompanyState(error.problem.company.id), ceoOfficeLocation);
+          } catch {
+            // The typed problem remains actionable even if the follow-up snapshot is unavailable.
+          }
+        }
+      }
       setCreateError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsCreating(false);
@@ -429,7 +472,7 @@ export default function App({ apiClient }: AppProps) {
   }
 
   async function handleRetryCompanyCreation() {
-    const companyId = blueprint?.company.id;
+    const companyId = plannedState?.company.id ?? blueprint?.company.id;
     if (!companyId) {
       return;
     }
@@ -438,6 +481,7 @@ export default function App({ apiClient }: AppProps) {
     setCreationEvents([]);
     try {
       const response = await client.retryCompanyCreation(companyId);
+      setCompanyProblem(null);
       applyCompanyState(response, ceoOfficeLocation);
     } catch (error) {
       setCreateError((error as Error).message);
@@ -445,6 +489,29 @@ export default function App({ apiClient }: AppProps) {
       setIsCreating(false);
     }
   }
+
+  async function handlePlannedCompanyOperation(operation: "pause" | "resume" | "stop") {
+    if (!plannedState || isCreating) return;
+    setIsCreating(true);
+    try {
+      if (operation === "pause") await client.pauseCompany(plannedState.company.id);
+      if (operation === "resume") await client.resumeCompany(plannedState.company.id);
+      if (operation === "stop") await client.stopCompany(plannedState.company.id);
+      applyCompanyState(await client.getCompanyState(plannedState.company.id));
+    } catch (error) {
+      setCreateError(formatErrorMessage(error));
+    } finally {
+      setIsCreating(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!plannedState || plannedState.company.status !== "creating") return;
+    const timer = window.setInterval(() => {
+      void client.getCompanyState(plannedState.company.id).then(applyCompanyState).catch((error) => setCreateError(formatErrorMessage(error)));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [client, plannedState?.company.id, plannedState?.company.status]);
 
   // Pause, Resume and Stop Operating (ADR 0044). The company's own status is what says it is paused.
   async function handlePauseOperating() {
@@ -475,6 +542,7 @@ export default function App({ apiClient }: AppProps) {
     const companyId = blueprint?.company.id;
     if (!companyId) return;
     const response = await client.getCompanyState(companyId);
+    if (isCompanyStateResponse(response)) return;
     setReplanProposals(response.replanProposals ?? []);
     setBlueprint((current) => current ? { ...current, tasks: adoptSettledTasks(current.tasks, response.tasks) } : current);
   }
@@ -592,7 +660,7 @@ export default function App({ apiClient }: AppProps) {
     setCeoIntakes((current) => upsertCeoIntake(current, response.intake));
     // The founder's message is a card in the server's projection; read it back so it shows at once.
     void client.getCompanyState(companyId).then((state) => {
-      if (companyIdRef.current === companyId) adoptBusinessProjection(state);
+      if (companyIdRef.current === companyId && !isCompanyStateResponse(state)) adoptBusinessProjection(state);
     }).catch(() => undefined);
   }
 
@@ -606,7 +674,7 @@ export default function App({ apiClient }: AppProps) {
     setCeoIntakes((current) => upsertCeoIntake(current, response.intake));
     // The message is a card in the server's projection; read it back so it shows at once.
     void client.getCompanyState(companyId).then((state) => {
-      if (companyIdRef.current === companyId) adoptBusinessProjection(state);
+      if (companyIdRef.current === companyId && !isCompanyStateResponse(state)) adoptBusinessProjection(state);
     }).catch(() => undefined);
   }
 
@@ -693,9 +761,10 @@ export default function App({ apiClient }: AppProps) {
   }
 
   function handleCreateNewCompany({ returnable = true }: { returnable?: boolean } = {}) {
-    setReturnCompanyId(returnable ? (blueprint?.company.id ?? null) : null);
+    setReturnCompanyId(returnable ? (plannedState?.company.id ?? blueprint?.company.id ?? null) : null);
     clearCurrentCompanyId();
     setBlueprint(null);
+    setPlannedState(null);
     setProof([]);
     setBusinessArtifacts([]);
     setReviews([]);
@@ -715,7 +784,7 @@ export default function App({ apiClient }: AppProps) {
   // instance across navigation and a language chosen on one view survives the move to the next.
   function renderModernAppFrame(children: ReactNode) {
     return (
-      <LanguageProvider defaultLanguage={defaultLanguage} syncLocale={blueprint?.company.locale ?? null}>
+      <LanguageProvider defaultLanguage={defaultLanguage} syncLocale={plannedState?.company.locale ?? blueprint?.company.locale ?? null}>
         {children}
       </LanguageProvider>
     );
@@ -725,6 +794,18 @@ export default function App({ apiClient }: AppProps) {
     return renderModernAppFrame(
       <StartupScreen error={startupError} failed={startupError !== null} onRetry={() => void openStartupCompany()} />,
     );
+  }
+
+  if (plannedState && (view === "creating" || view === "workbench")) {
+    return renderModernAppFrame(<PlannedCompany
+      state={plannedState}
+      busy={isCreating}
+      onPause={() => void handlePlannedCompanyOperation("pause")}
+      onResume={() => void handlePlannedCompanyOperation("resume")}
+      onStop={() => void handlePlannedCompanyOperation("stop")}
+      problem={companyProblem}
+      onRecheck={() => void handleRetryCompanyCreation()}
+    />);
   }
 
   if (view === "creating") {

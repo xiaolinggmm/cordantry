@@ -30,13 +30,20 @@ export type ProofType =
 export type AgentRunStatus = "queued" | "running" | "complete" | "failed" | "cancelled";
 export type CreationAttemptStatus = "running" | "complete" | "failed";
 export type CompanyEventType =
+  | "creation_request_accepted"
+  | "plan_requested"
+  | "artifact_received"
+  | "plan_validated"
+  | "organization_created"
+  | "company_ready"
   | "company_plan_created"
   | "company_creation_accepted"
   | "company_creation_agent_started"
   | "company_creation_blueprint_parsed"
   | "company_creation_records_created"
   | "company_creation_completed"
-  | "company_creation_failed";
+  | "company_creation_failed"
+  | "assignment_result_accepted";
 export type ApprovalStatus = "pending" | "approved" | "denied";
 /**
  * - `proposed`: awaiting the founder.
@@ -520,6 +527,9 @@ export type CompanyPlanRoute = {
   rationale: string;
 };
 
+export type AssignmentBusinessStatus = "waiting" | "ready" | "in_progress" | "needs_founder" | "completed" | "stopped";
+export type AssignmentStage = "research" | "delivery" | "acceptance" | "direction_preparation" | "founder_review" | "product_delivery";
+
 export type DepartmentAssignment = {
   id: string;
   companyId: string;
@@ -529,6 +539,10 @@ export type DepartmentAssignment = {
   expectedOutcome: string;
   dependsOnAssignmentIds: string[];
   route: CompanyPlanRoute;
+  order: number;
+  stage: AssignmentStage;
+  status: AssignmentBusinessStatus;
+  directionKey?: string | null;
 };
 
 export type CreationAttempt = {
@@ -550,6 +564,10 @@ export type CompanyEvent = {
   messageText?: LocalizedText | null;
   createdAt: string;
   status?: CompanyStatus | null;
+  sequence?: number;
+  kind?: string;
+  occurredAt?: string;
+  businessPayload?: Record<string, unknown>;
 };
 
 /**

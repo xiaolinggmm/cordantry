@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApiClient } from "./client";
+import { CompanyProblemError, createApiClient } from "./client";
 
 describe("createApiClient", () => {
   afterEach(() => {
@@ -145,7 +145,7 @@ describe("createApiClient", () => {
     const client = createApiClient("", { requestTimeoutMs: 25 });
 
     await expect(client.getTaskExecution("task_1")).rejects.toThrow('Unexpected response from /api/tasks/task_1/execution: missing "task".');
-    await expect(client.getCompanyState("company_1")).rejects.toThrow('Unexpected response from /api/companies/company_1/state: missing "company".');
+    await expect(client.getCompanyState("company_1")).rejects.toThrow('Unexpected response from /api/companies/company_1/state: missing "schemaVersion".');
     await expect(client.stopCompany("company_1")).rejects.toThrow('missing "company"');
   });
 
@@ -155,5 +155,50 @@ describe("createApiClient", () => {
     const client = createApiClient("", { requestTimeoutMs: 25 });
 
     await expect(client.getTaskExecution("task_1")).resolves.toEqual(body);
+  });
+
+  it("accepts the Company Creation Receipt without requiring planning collections", async () => {
+    const receipt = {
+      schemaVersion: 1,
+      kind: "company_creation_receipt",
+      company: { id: "company_1", status: "creating" },
+      createdAt: "2026-11-10T00:00:00.000Z",
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(receipt)));
+    const client = createApiClient("", { requestTimeoutMs: 25 });
+
+    await expect(client.createCompany({ founderVision: "Help creators crop video faster." })).resolves.toEqual(receipt);
+  });
+
+  it("preserves a typed Company Problem and its safe Founder actions", async () => {
+    const problem = {
+      schemaVersion: 1,
+      kind: "company_problem",
+      category: "installation_required",
+      message: "Install MAH first.",
+      availableActions: [{ kind: "download_mah", url: "https://mah.bot/download" }, { kind: "recheck" }],
+      company: { id: "company_1", status: "creation_failed", name: "Planning company", playbookId: "mah-company-plan" },
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(problem, { status: 503 })));
+
+    const request = createApiClient("", { requestTimeoutMs: 25 }).createCompany({ founderVision: "Help creators." });
+    await expect(request).rejects.toBeInstanceOf(CompanyProblemError);
+    await request.catch((error: CompanyProblemError) => expect(error.problem).toEqual(problem));
+  });
+
+  it("accepts a Company State Snapshot with Assignments and no legacy Tasks", async () => {
+    const snapshot = {
+      schemaVersion: 1,
+      kind: "company_state",
+      lastEventSequence: 6,
+      company: { id: "company_1", status: "active" },
+      objectives: [],
+      departments: [],
+      assignments: [],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(snapshot)));
+    const client = createApiClient("", { requestTimeoutMs: 25 });
+
+    await expect(client.getCompanyState("company_1")).resolves.toEqual(snapshot);
   });
 });

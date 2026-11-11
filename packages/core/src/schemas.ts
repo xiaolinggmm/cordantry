@@ -651,6 +651,9 @@ export const companyPlanSchema = z
         kind: z.enum(["ordinary_task", "product_direction"]),
         rationale: nonEmptyString,
       }).strict(),
+      order: z.number().int().nonnegative(),
+      stage: z.enum(["research", "delivery", "acceptance", "direction_preparation", "founder_review", "product_delivery"]),
+      directionKey: companyPlanIdSchema.optional(),
     }).strict()).min(1),
   })
   .strict()
@@ -658,6 +661,7 @@ export const companyPlanSchema = z
     const objectiveIds = new Set<string>();
     const departmentIds = new Set<string>();
     const assignmentIds = new Set<string>();
+    const assignmentOrders = new Set<number>();
 
     plan.objectives.forEach((objective, index) => {
       if (objectiveIds.has(objective.id)) context.addIssue({
@@ -676,6 +680,21 @@ export const companyPlanSchema = z
         code: "custom", path: ["assignments", index, "id"], message: `Duplicate assignment id: ${assignment.id}`,
       });
       assignmentIds.add(assignment.id);
+      if (assignmentOrders.has(assignment.order)) context.addIssue({
+        code: "custom", path: ["assignments", index, "order"], message: `Duplicate assignment order: ${assignment.order}`,
+      });
+      assignmentOrders.add(assignment.order);
+      if (assignment.route.kind === "ordinary_task" && !["research", "delivery", "acceptance"].includes(assignment.stage)) {
+        context.addIssue({ code: "custom", path: ["assignments", index, "stage"], message: "Ordinary work requires an ordinary Assignment stage." });
+      }
+      if (assignment.route.kind === "product_direction") {
+        if (!["direction_preparation", "founder_review", "product_delivery"].includes(assignment.stage)) {
+          context.addIssue({ code: "custom", path: ["assignments", index, "stage"], message: "Product Direction work requires a Product Direction stage." });
+        }
+        if (!assignment.directionKey) context.addIssue({
+          code: "custom", path: ["assignments", index, "directionKey"], message: "Product Direction work requires a direction key.",
+        });
+      }
     });
     plan.assignments.forEach((assignment, index) => {
       if (!departmentIds.has(assignment.departmentId)) context.addIssue({
@@ -711,6 +730,34 @@ export const companyPlanSchema = z
   });
 
 export type CompanyPlan = z.infer<typeof companyPlanSchema>;
+
+const assignmentEvidenceReferenceSchema = nonEmptyString.refine(
+  (value) => value.startsWith("artifacts/") && !value.split("/").includes(".."),
+  "Evidence references must name a file inside artifacts/.",
+);
+
+export const assignmentResultSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("assignment_result"),
+  assignmentId: nonEmptyString,
+  resultSummary: nonEmptyString,
+  keyFindings: z.array(nonEmptyString),
+  completedOutcome: nonEmptyString,
+  limitations: z.array(nonEmptyString),
+  downstreamFacts: z.array(z.object({ key: nonEmptyString, value: nonEmptyString }).strict()),
+  recommendedNextAction: nonEmptyString,
+  judgment: z.object({
+    decision: z.enum(["accepted", "rejected"]),
+    rationale: nonEmptyString,
+    satisfiedObligations: z.array(nonEmptyString),
+    unsatisfiedObligations: z.array(nonEmptyString),
+    evidenceReferences: z.array(assignmentEvidenceReferenceSchema),
+    agentId: nonEmptyString,
+    modelId: nonEmptyString,
+  }).strict(),
+}).strict();
+
+export type AssignmentResult = z.infer<typeof assignmentResultSchema>;
 
 export const ceoResponseSchema = z.object({
   brief: nonEmptyString,

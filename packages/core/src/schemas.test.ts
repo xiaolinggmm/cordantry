@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   agentFailureReasonSchema,
+  assignmentResultSchema,
   ceoAttentionRollupReasonSchema,
   ceoResponseSchema,
   companyBlueprintSchema,
+  companyPlanSchema,
   finalFounderReportClassificationSchema,
   finalFounderReportPayloadSchema,
   finalFounderReportSchema,
@@ -19,6 +21,75 @@ import {
   taskSchema,
   taskStatusSchema,
 } from "./schemas";
+
+describe("companyPlanSchema", () => {
+  const plan = {
+    schemaVersion: 1,
+    company: { name: "Creator Studio" },
+    objectives: [{ id: "objective_1", title: "Validate demand" }],
+    departments: [{ id: "department_1", name: "Research", responsibility: "Validate demand." }],
+    assignments: [{
+      id: "assignment_1",
+      departmentId: "department_1",
+      objectiveId: "objective_1",
+      title: "Interview creators",
+      expectedOutcome: "A ranked problem list.",
+      dependsOnAssignmentIds: [],
+      route: { kind: "ordinary_task", rationale: "This is ordinary research." },
+      order: 0,
+      stage: "research",
+    }],
+  };
+
+  it("requires a unique non-negative order and a route-valid initial stage", () => {
+    expect(companyPlanSchema.safeParse(plan).success).toBe(true);
+    expect(companyPlanSchema.safeParse({ ...plan, assignments: [{ ...plan.assignments[0], order: -1 }] }).success).toBe(false);
+    expect(companyPlanSchema.safeParse({
+      ...plan,
+      assignments: [plan.assignments[0], { ...plan.assignments[0], id: "assignment_2" }],
+    }).success).toBe(false);
+    expect(companyPlanSchema.safeParse({ ...plan, assignments: [{ ...plan.assignments[0], stage: "direction_preparation" }] }).success).toBe(false);
+  });
+
+  it("requires a direction key for Product Direction assignments", () => {
+    const assignment = {
+      ...plan.assignments[0],
+      route: { kind: "product_direction", rationale: "This changes product capability." },
+      stage: "direction_preparation",
+    };
+    expect(companyPlanSchema.safeParse({ ...plan, assignments: [assignment] }).success).toBe(false);
+    expect(companyPlanSchema.safeParse({ ...plan, assignments: [{ ...assignment, directionKey: "creator-cropping" }] }).success).toBe(true);
+  });
+});
+
+describe("assignmentResultSchema", () => {
+  const result = {
+    schemaVersion: 1,
+    kind: "assignment_result",
+    assignmentId: "assignment_1",
+    resultSummary: "Creators lose time when they crop each format by hand.",
+    keyFindings: ["Short-form creators repeat the same crop for three platforms."],
+    completedOutcome: "A ranked list of cropping problems.",
+    limitations: ["The sample included five creators."],
+    downstreamFacts: [{ key: "top_problem", value: "Repeated multi-format cropping" }],
+    recommendedNextAction: "Test one automatic multi-format crop flow.",
+    judgment: {
+      decision: "accepted",
+      rationale: "The result answers the research question.",
+      satisfiedObligations: ["Rank the main cropping problems."],
+      unsatisfiedObligations: [],
+      evidenceReferences: ["artifacts/interview-notes.md"],
+      agentId: "research-agent",
+      modelId: "model-1",
+    },
+  };
+
+  it("accepts a complete business result and rejects unsupported decisions", () => {
+    expect(assignmentResultSchema.safeParse(result).success).toBe(true);
+    expect(assignmentResultSchema.safeParse({ ...result, judgment: { ...result.judgment, decision: "needs_founder" } }).success).toBe(false);
+    expect(assignmentResultSchema.safeParse({ ...result, judgment: { ...result.judgment, evidenceReferences: ["../private.log"] } }).success).toBe(false);
+  });
+});
 
 const validBlueprint = {
   company: {

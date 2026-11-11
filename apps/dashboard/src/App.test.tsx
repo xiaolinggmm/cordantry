@@ -9,6 +9,7 @@ import type {
   BusinessArtifactSummary,
   CeoAttentionRollupSummary,
   CeoOfficeItemSummary,
+  CreateCompanyResponse,
   FounderDecisionSummary,
   HumanActionSummary,
   ReplanProposalSummary,
@@ -21,36 +22,36 @@ import type {
 } from "./api/client";
 
 describe("Dashboard App", () => {
-  it("creates a direct company from the form and opens its workspace", async () => {
+  it("creates a MAH-planned company from one Founder Vision", async () => {
     const api = createMockApiClient();
+    api.createCompany = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      kind: "company_creation_receipt" as const,
+      company: { id: "company_plan_1", name: "Planning company", status: "creating", playbookId: "mah-company-plan" },
+      createdAt: "2026-11-10T00:00:00.000Z",
+    }));
+    api.getCompanyState = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      kind: "company_state" as const,
+      lastEventSequence: 6,
+      company: { id: "company_plan_1", name: "Creator Studio", status: "active", playbookId: "mah-company-plan" },
+      objectives: [{ id: "objective_1", title: "Validate demand", priority: 0 }],
+      departments: [{ id: "department_1", name: "Research", responsibility: "Learn what creators need." }],
+      assignments: [{ id: "assignment_1", departmentId: "department_1", objectiveId: "objective_1", title: "Interview creators", expectedOutcome: "A ranked problem list.", dependsOnAssignmentIds: [], route: { kind: "ordinary_task" as const, rationale: "Research" }, order: 0, stage: "research", status: "ready" }],
+    }));
     const user = userEvent.setup();
     render(<App apiClient={api} />);
-    await user.click(await screen.findByRole("button", { name: "Create directly" }));
-    await user.type(screen.getByLabelText("Company name"), "My studio");
-    await user.type(screen.getByLabelText("Founder vision"), "My goal");
-    await user.selectOptions(screen.getByLabelText("CEO agent"), "codex");
-    await user.click(screen.getByRole("button", { name: "Generate team and plan" }));
-    await waitFor(() => expect(api.createCompany).toHaveBeenCalledWith(expect.objectContaining({ companyName: "My studio", founderVision: "My goal", executionMode: "direct", selectedCeoAgentId: "codex" })));
-    await waitFor(() => expect(api.subscribeEvents).toHaveBeenCalled());
-  });
 
-  it("keeps MAH input and actionable server errors on preflight refusal without opening creation", async () => {
-    const api = createMockApiClient();
-    api.createCompany = vi.fn().mockRejectedValue(new Error("MAH executable not found. Set an installed executable path."));
-    const user = userEvent.setup();
-    render(<App apiClient={api} />);
-    await user.click(await screen.findByRole("button", {name: "Create directly"}));
-    await user.click(screen.getByRole("radio", {name: "MAH coordination (advanced)"}));
-    await user.type(screen.getByLabelText("Company name"), "Studio");
-    await user.type(screen.getByLabelText("Founder vision"), "Build tools");
-    await user.selectOptions(screen.getByLabelText("CEO agent"), "codex");
-    await user.type(screen.getByLabelText("MAH project root"), "/project");
-    await user.click(screen.getByRole("button", {name: "Generate team and plan"}));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Set an installed executable path.");
-    expect(screen.getByLabelText("Company name")).toHaveValue("Studio");
-    expect(screen.getByLabelText("MAH project root")).toHaveValue("/project");
-    expect(api.subscribeEvents).not.toHaveBeenCalled();
-    expect(api.createCompany).toHaveBeenCalledWith(expect.objectContaining({executionMode: "mah", mahConfig: {projectRoot: "/project", cliPath: "mah", slotClass: "background"}}));
+    await user.type(await screen.findByLabelText("Founder vision"), "Help creators crop video faster.");
+    await user.click(screen.getByRole("button", { name: "Create Company" }));
+
+    await waitFor(() => expect(api.createCompany).toHaveBeenCalledWith(expect.objectContaining({
+      founderVision: "Help creators crop video faster.",
+      creationIdempotencyKey: expect.any(String),
+    })));
+    expect(await screen.findByRole("heading", { name: "Creator Studio" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Research" })).toBeInTheDocument();
+    expect(screen.queryByText(/taskId|executionMode|mahConfig|Work Queue/i)).not.toBeInTheDocument();
   });
 
   it("ignores a completed MAH repair after switching to another company", async () => {
@@ -76,38 +77,6 @@ describe("Dashboard App", () => {
     await openPage(user, "Settings");
     expect(screen.queryByLabelText("MAH project root")).not.toBeInTheDocument();
     expect(screen.queryByText("Connection saved.")).not.toBeInTheDocument();
-  });
-
-  it("allows real creation from a reviewed demo", async () => {
-    const api = createMockApiClient();
-    const user = userEvent.setup();
-    renderExistingCompany(api);
-    await expectExistingCompany();
-    await openPage(user, "Settings");
-    await user.click(screen.getByRole("button", {name: "Watch the demo"}));
-    await user.click(screen.getByRole("button", {name: "Create directly"}));
-    await user.type(screen.getByLabelText("Company name"), "New company");
-    await user.type(screen.getByLabelText("Founder vision"), "New goal");
-    await user.selectOptions(screen.getByLabelText("CEO agent"), "codex");
-    await user.click(screen.getByRole("button", {name: "Generate team and plan"}));
-    await waitFor(() => expect(api.createCompany).toHaveBeenCalled());
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  });
-
-  it("reviews the demo without background operation shortcuts and restores launcher focus", async () => {
-    const api = createMockApiClient();
-    const user = userEvent.setup();
-    renderExistingCompany(api);
-    await expectExistingCompany();
-    await openPage(user, "Settings");
-    const launcher = screen.getByRole("button", { name: "Watch the demo" });
-    await user.click(launcher);
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    await user.keyboard("{Meta>}{Shift>}k{/Shift}{/Meta}");
-    expect(api.pauseCompany).not.toHaveBeenCalled();
-    expect(api.resumeCompany).not.toHaveBeenCalled();
-    await user.keyboard("{Escape}");
-    await waitFor(() => expect(launcher).toHaveFocus());
   });
 
   it("shows the company list load failure detail", async () => {
@@ -3072,7 +3041,7 @@ describe("Dashboard App", () => {
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     await user.click(within(screen.getByRole("group", { name: "Language" })).getByRole("button", { name: "中文" }));
 
-    expect(screen.getByRole("heading", { name: "让复杂目标变得清晰" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "创建你的公司" })).toBeInTheDocument();
     expect(window.localStorage.getItem("cordantry.currentLanguage")).toBe("zh");
   });
 
@@ -3169,7 +3138,7 @@ describe("Dashboard App", () => {
     try {
       render(<App apiClient={api} />);
 
-      expect(await screen.findByRole("heading", { name: "让复杂目标变得清晰" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "创建你的公司" })).toBeInTheDocument();
       expect(within(screen.getByRole("group", { name: "语言" })).getByRole("button", { name: "中文" })).toHaveAttribute(
         "aria-pressed",
         "true",
@@ -3920,7 +3889,7 @@ describe("Workbench", () => {
     await openPage(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Create New Company" }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Return to company" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
     expect(await screen.findByRole("heading", { name: "Ops Lab" })).toBeInTheDocument();
     expect(api.getCompanyState).toHaveBeenLastCalledWith("company_2");
   });
@@ -4041,7 +4010,7 @@ function createDeferred<T>() {
   return { promise, reject, resolve };
 }
 
-function createCreatingCompanyResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createCreatingCompanyResponse(): CreateCompanyResponse {
   return {
     company: {
       id: "company_1",
@@ -4070,7 +4039,7 @@ function createCreatingCompanyResponse(): Awaited<ReturnType<ApiClient["createCo
   };
 }
 
-function createFailedCompanyCreationResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createFailedCompanyCreationResponse(): CreateCompanyResponse {
   return {
     ...createCreatingCompanyResponse(),
     company: {
@@ -4104,7 +4073,7 @@ function offered(...kinds: TaskAffordanceKind[]): TaskAffordanceSummary[] {
   }));
 }
 
-function createCompanyResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createCompanyResponse(): CreateCompanyResponse {
   return {
     company: {
       id: "company_1",
@@ -4307,7 +4276,7 @@ function createCeoAttentionRollupSummary(): CeoAttentionRollupSummary {
   };
 }
 
-function createCeoOfficeAttentionCompanyResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createCeoOfficeAttentionCompanyResponse(): CreateCompanyResponse {
   const created = createCompanyResponse();
 
   return {
@@ -4379,7 +4348,7 @@ function createCeoOfficeAttentionCompanyResponse(): Awaited<ReturnType<ApiClient
   };
 }
 
-function createReviewReadyCompanyResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createReviewReadyCompanyResponse(): CreateCompanyResponse {
   const created = createCompanyResponse();
   return {
     ...created,
@@ -4615,7 +4584,7 @@ function createApprovalRequestCeoOfficeItem({
   };
 }
 
-function createDependencyGraphCompanyResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createDependencyGraphCompanyResponse(): CreateCompanyResponse {
   const created = createCompanyResponse();
   return {
     ...created,
@@ -4744,7 +4713,7 @@ function createTaskCompletionEventSummary(
   };
 }
 
-function createOutcomesCompanyResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createOutcomesCompanyResponse(): CreateCompanyResponse {
   const created = createCompanyResponse();
   return {
     ...created,
@@ -4794,7 +4763,7 @@ function createOutcomesCompanyResponse(): Awaited<ReturnType<ApiClient["createCo
   };
 }
 
-function createOutcomesNewMarkerResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createOutcomesNewMarkerResponse(): CreateCompanyResponse {
   const base = createOutcomesCompanyResponse();
   return {
     ...base,
@@ -4871,7 +4840,7 @@ function createOutcomesNewMarkerResponse(): Awaited<ReturnType<ApiClient["create
   };
 }
 
-function createFinalFounderReportCompanyResponse(): Awaited<ReturnType<ApiClient["createCompany"]>> {
+function createFinalFounderReportCompanyResponse(): CreateCompanyResponse {
   const created = createCompanyResponse();
   return {
     ...created,
@@ -4926,7 +4895,7 @@ function createReplanProposalSummary(): ReplanProposalSummary {
   };
 }
 
-function createMockApiClient(): ApiClient & { initialCompany: () => Promise<Awaited<ReturnType<ApiClient["createCompany"]>>>; lastEventHandler?: (event: ServerEvent) => void } {
+function createMockApiClient(): ApiClient & { initialCompany: () => Promise<CreateCompanyResponse>; lastEventHandler?: (event: ServerEvent) => void } {
   return {
     lastEventHandler: undefined,
     listAgents: vi.fn(async () => {

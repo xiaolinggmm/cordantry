@@ -19,6 +19,69 @@ afterEach(() => {
 });
 
 describe("MAH-owned company planning API", () => {
+  it("uses one linked correction Task when the first Company Plan is structurally invalid", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "cordantry-mah-company-correction-"));
+    temporaryRoots.push(projectRoot);
+    const database = createDatabaseClient(":memory:");
+    migrate(database);
+    const repositories = createRepositories(database);
+    repositories.createCompany({ id: "company_1", name: "Planning company", founderVision: "Help creators.", locale: "en", selectedCeoAgentId: "mah", playbookId: "mah-company-plan", permissionMode: null, executionMode: "mah", mahConfig: null, status: "creating", createdAt: "2026-11-10T00:00:00.000Z", updatedAt: "2026-11-10T00:00:00.000Z" });
+    const taskIds = ["planning-task", "correction-task"];
+    const submitted = new Set<string>();
+    const command: MahCommand = async (args) => {
+      const taskId = args.includes("--task-id") ? args[args.indexOf("--task-id") + 1] : args[2];
+      if (args[1] === "show") return submitted.has(taskId)
+        ? { exitCode: 0, stdout: JSON.stringify({ ok: true, task: { task_id: taskId, status: "completed" } }), stderr: "" }
+        : { exitCode: 1, stdout: JSON.stringify({ error: { code: "task_not_found" } }), stderr: "" };
+      if (args[1] === "submit") { submitted.add(taskId); return { exitCode: 0, stdout: JSON.stringify({ task_id: taskId }), stderr: "" }; }
+      if (args[1] === "context") return { exitCode: 0, stdout: JSON.stringify({ content: JSON.stringify(taskId === taskIds[0] ? { ...validCompanyPlan(), departments: [] } : validCompanyPlan()) }), stderr: "" };
+      throw new Error(`Unexpected MAH command: ${args.join(" ")}`);
+    };
+    let idIndex = 0;
+    const provider = createMahCompanyPlanProvider({ repositories, mahProjectRoot: projectRoot, command, createTaskId: () => taskIds[idIndex++], pollMs: 0 });
+
+    await expect(provider({ companyId: "company_1", founderVision: "Help creators.", projectRoot })).resolves.toEqual(validCompanyPlan());
+    expect([...submitted]).toEqual(taskIds);
+    expect(repositories.mahCompanyPlanning.get("company_1")).toMatchObject({
+      mahTaskId: taskIds[0], activeTaskId: taskIds[1], taskLineage: taskIds, correctionCount: 1, state: "completed",
+    });
+    database.close();
+  });
+
+  it("only rechecks the stable planning Task after the admission deadline", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "cordantry-mah-deadline-"));
+    temporaryRoots.push(projectRoot);
+    const database = createDatabaseClient(":memory:");
+    migrate(database);
+    const repositories = createRepositories(database);
+    const at = "2026-11-10T00:00:00.000Z";
+    repositories.createCompany({ id: "company_1", name: "Planning company", founderVision: "Help creators.", locale: "en", selectedCeoAgentId: "mah", playbookId: "mah-company-plan", permissionMode: null, executionMode: "mah", mahConfig: null, status: "creation_failed", createdAt: at, updatedAt: at });
+    const taskId = "stable-deadline-task";
+    const first = createMahCompanyPlanProvider({
+      repositories, mahProjectRoot: projectRoot, createTaskId: () => taskId, timeoutMs: 1,
+      now: () => new Date(at),
+      command: async (args) => {
+        if (args[1] === "show") return { exitCode: 1, stdout: JSON.stringify({ error: { code: "task_not_found" } }), stderr: "" };
+        throw new Error("submit interrupted");
+      },
+    });
+    await expect(first({ companyId: "company_1", founderVision: "Help creators.", projectRoot })).rejects.toThrow("submit interrupted");
+
+    let submitCalls = 0;
+    const recheck = createMahCompanyPlanProvider({
+      repositories, mahProjectRoot: projectRoot, now: () => new Date("2026-11-10T00:00:02.000Z"),
+      command: async (args) => {
+        if (args[1] === "show") return { exitCode: 1, stdout: JSON.stringify({ error: { code: "task_not_found" } }), stderr: "" };
+        if (args[1] === "submit") submitCalls += 1;
+        return { exitCode: 1, stdout: "", stderr: "unexpected" };
+      },
+    });
+    await expect(recheck({ companyId: "company_1", founderVision: "Help creators.", projectRoot })).rejects.toThrow("only recheck the original Task");
+    expect(submitCalls).toBe(0);
+    expect(repositories.mahCompanyPlanning.get("company_1")).toMatchObject({ mahTaskId: taskId, submitCount: 1, state: "unknown" });
+    database.close();
+  });
+
   it("submits one stable MAH Planning Task and recovers its public Company Plan artifact", async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), "cordantry-mah-company-planning-"));
     temporaryRoots.push(projectRoot);
@@ -68,8 +131,29 @@ describe("MAH-owned company planning API", () => {
         body: JSON.stringify({ founderVision: "Help independent creators crop videos faster." }),
       });
       expect(response.status).toBe(202);
-      const created = await response.json() as { company: { id: string } };
-      await waitForActiveCompany(baseUrl, created.company.id);
+      const created = await response.json() as { schemaVersion: number; kind: string; createdAt: string; company: { id: string } };
+      expect(created).toMatchObject({
+        schemaVersion: 1,
+        kind: "company_creation_receipt",
+        createdAt: expect.any(String),
+        company: { status: "creating" },
+      });
+      expect(created).not.toHaveProperty("departments");
+      expect(created).not.toHaveProperty("assignments");
+      const state = await waitForActiveCompany(baseUrl, created.company.id);
+      expect(state).toMatchObject({
+        schemaVersion: 1,
+        kind: "company_state",
+        lastEventSequence: 6,
+      });
+      expect(repositories.listCompanyEventsForCompany(created.company.id)).toMatchObject([
+        { sequence: 1, kind: "creation_request_accepted" },
+        { sequence: 2, kind: "plan_requested" },
+        { sequence: 3, kind: "artifact_received" },
+        { sequence: 4, kind: "plan_validated" },
+        { sequence: 5, kind: "organization_created" },
+        { sequence: 6, kind: "company_ready" },
+      ]);
 
       expect(repositories.mahCompanyPlanning.get(created.company.id)).toMatchObject({
         companyId: created.company.id,
@@ -148,7 +232,8 @@ describe("MAH-owned company planning API", () => {
         ? { exitCode: 1, stdout: "", stderr: "Submission result lost." }
         : { exitCode: 1, stdout: JSON.stringify({ ok: false, error: { code: "task_not_found" } }), stderr: "" },
     });
-    await expect(unresolvedProvider({ companyId, founderVision, projectRoot })).rejects.toThrow("Submission result lost");
+    await expect(unresolvedProvider({ companyId, founderVision, projectRoot }))
+      .rejects.toThrow("confirming that the original MAH Task does not exist");
     expect(repositories.mahCompanyPlanning.get(companyId)).toMatchObject({ mahTaskId, state: "unknown" });
 
     const recoveryCalls: string[][] = [];
@@ -270,12 +355,22 @@ describe("MAH-owned company planning API", () => {
         return { exitCode: 0, stdout: JSON.stringify({ content: JSON.stringify(validCompanyPlan()) }), stderr: "" };
       },
     });
+    await expect(recoveredProvider({ companyId, founderVision, projectRoot }))
+      .rejects.toThrow("confirming that the original MAH Task does not exist");
+    expect(submittedIds).toEqual([]);
+    expect(repositories.mahCompanyPlanning.get(companyId)).toMatchObject({
+      mahTaskId,
+      submitCount: 1,
+      taskNotFoundCount: 1,
+    });
+
     await expect(recoveredProvider({ companyId, founderVision, projectRoot })).resolves.toEqual(validCompanyPlan());
     expect(submittedIds).toEqual([mahTaskId]);
+    expect(repositories.mahCompanyPlanning.get(companyId)).toMatchObject({ mahTaskId, submitCount: 2 });
     database.close();
   });
 
-  it("uses an available local Agent to derive the Company Plan when MAH planning is not configured", async () => {
+  it("does not fall back to a local Agent when MAH planning is not configured", async () => {
     const requests: AgentRunRequest[] = [];
     const localAgent: AgentAdapter = {
       id: "codex",
@@ -302,42 +397,26 @@ describe("MAH-owned company planning API", () => {
         body: JSON.stringify({ founderVision: "Help independent creators crop videos faster." }),
       });
 
-      expect(response.status).toBe(202);
-      const created = await response.json() as { company: { id: string } };
-      const state = await waitForActiveCompany(fixture.baseUrl, created.company.id);
-
-      expect(state.company).toMatchObject({ name: "Creator Validation Studio", status: "active" });
-      expect(fixture.repositories.getCompany(created.company.id)).toMatchObject({
-        selectedCeoAgentId: "codex",
-        executionMode: "direct",
-        mahConfig: null,
+      expect(response.status).toBe(503);
+      const problem = await response.json() as { company: { id: string; status: string } };
+      expect(problem).toMatchObject({
+        schemaVersion: 1,
+        kind: "company_problem",
+        category: "installation_required",
+        availableActions: [
+          { kind: "download_mah", url: "https://mah.bot/download" },
+          { kind: "recheck" },
+        ],
+        company: { status: "creation_failed" },
       });
-      expect(fixture.repositories.listDepartments(created.company.id)[0]?.leadAgentId).toBe("codex");
-      expect(state.departments).toHaveLength(1);
-      expect(state.assignments).toHaveLength(1);
-      expect(requests).toHaveLength(1);
-      expect(requests[0]).toMatchObject({
-        taskId: `${created.company.id}_company_plan`,
-        metadata: { phase: "company_plan" },
-        grant: { granted: [], withheld: [], id: "none" },
+      expect(fixture.repositories.getCompany(problem.company.id)).toMatchObject({
+        founderVision: "Help independent creators crop videos faster.",
+        status: "creation_failed",
       });
-      expect(requests[0]?.outputSchema).toMatchObject({ type: "object", additionalProperties: false });
-      expect(JSON.stringify(state)).not.toMatch(/selectedCeoAgentId|executionMode|mahConfig|taskId|workQueue/i);
-
-      const pausedResponse = await fetch(`${fixture.baseUrl}/api/companies/${created.company.id}/pause`, { method: "POST" });
-      expect(pausedResponse.status).toBe(200);
-      const paused = await pausedResponse.json() as Record<string, unknown>;
-      expect(paused).toEqual({ company: expect.objectContaining({ id: created.company.id, status: "paused" }) });
-      expect(JSON.stringify(paused)).not.toMatch(/selectedCeoAgentId|executionMode|playbookId|mahConfig|interruptedTasks|unreachableTasks|stoppedSessions/i);
-
-      const conflictResponse = await fetch(`${fixture.baseUrl}/api/companies/${created.company.id}/pause`, { method: "POST" });
-      expect(conflictResponse.status).toBe(409);
-      const conflict = await conflictResponse.json() as Record<string, unknown>;
-      expect(conflict).toEqual({
-        error: "A paused company cannot pause.",
-        company: expect.objectContaining({ id: created.company.id, status: "paused" }),
+      expect(await (await fetch(`${fixture.baseUrl}/api/companies/${problem.company.id}/state`)).json()).toMatchObject({
+        problem: { category: "installation_required", availableActions: [{ kind: "download_mah" }, { kind: "recheck" }] },
       });
-      expect(JSON.stringify(conflict)).not.toMatch(/selectedCeoAgentId|executionMode|playbookId|mahConfig/i);
+      expect(requests).toHaveLength(0);
     } finally {
       await fixture.close();
     }
@@ -369,6 +448,8 @@ describe("MAH-owned company planning API", () => {
             kind: "ordinary_task",
             rationale: "This is business research, not a product capability change.",
           },
+          order: 0,
+          stage: "research",
         },
       ],
     };
@@ -409,6 +490,9 @@ describe("MAH-owned company planning API", () => {
             kind: "ordinary_task",
             rationale: "This is business research, not a product capability change.",
           },
+          order: 0,
+          stage: "research",
+          status: "ready",
         }),
       ]);
       expect(state.company).not.toHaveProperty("selectedCeoAgentId");
@@ -450,6 +534,7 @@ describe("MAH-owned company planning API", () => {
 
       expect(state.departments).toEqual([]);
       expect(state.assignments).toEqual([]);
+      expect(state.problem).toMatchObject({ category: "try_again_later", availableActions: [{ kind: "try_again" }] });
       expect(JSON.stringify(state)).not.toMatch(/selectedCeoAgentId|executionMode|mahConfig|taskId|workQueue/i);
     } finally {
       await fixture.close();
@@ -487,6 +572,31 @@ describe("MAH-owned company planning API", () => {
       await fixture.close();
     }
   });
+
+  it("returns the same Receipt for the same idempotency key and rejects changed input", async () => {
+    const fixture = await startServer(createCompanyPlanProvider(validCompanyPlan()));
+    const post = (founderVision: string) => fetch(`${fixture.baseUrl}/api/companies`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ founderVision, creationIdempotencyKey: "founder-request-1" }),
+    });
+    try {
+      const first = await post("Help creators crop video faster.");
+      const firstReceipt = await first.json() as { company: { id: string } };
+      const second = await post("Help creators crop video faster.");
+      const secondReceipt = await second.json() as { company: { id: string } };
+      expect(first.status).toBe(202);
+      expect(second.status).toBe(202);
+      expect(secondReceipt.company.id).toBe(firstReceipt.company.id);
+      expect(fixture.repositories.listCompanies()).toHaveLength(1);
+
+      const conflict = await post("Build a different company.");
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toMatchObject({ schemaVersion: 1, kind: "company_problem" });
+    } finally {
+      await fixture.close();
+    }
+  });
 });
 
 function validCompanyPlan() {
@@ -507,6 +617,8 @@ function validCompanyPlan() {
       expectedOutcome: "A ranked list of painful cropping workflows.",
       dependsOnAssignmentIds: [] as string[],
       route: { kind: "ordinary_task", rationale: "This is business research, not a product capability change." },
+      order: 0,
+      stage: "research",
     }],
   };
 }
@@ -556,6 +668,7 @@ async function waitForCompanyStatus(baseUrl: string, companyId: string, status: 
       company: Record<string, unknown>;
       departments: unknown[];
       assignments: unknown[];
+      problem?: Record<string, unknown> | null;
     };
     if (state.company.status === status) return state;
     await new Promise((resolve) => setTimeout(resolve, 5));
