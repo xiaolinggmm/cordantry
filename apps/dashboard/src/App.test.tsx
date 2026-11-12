@@ -12,6 +12,7 @@ it("creates a company from Founder Vision without asking for an Agent or executi
   const user = userEvent.setup();
   render(<App apiClient={client} />);
 
+  await user.click(await screen.findByRole("button", { name: "Create directly" }));
   await user.type(await screen.findByLabelText("Founder vision"), "Help creators crop video faster.");
   await user.click(screen.getByRole("button", { name: "Create Company" }));
 

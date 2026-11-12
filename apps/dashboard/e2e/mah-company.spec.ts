@@ -21,6 +21,7 @@ test("creates a company from Founder Vision without direct Agent routing", async
   });
 
   await page.goto("/");
+  await page.getByRole("button", { name: "Create directly" }).click();
   await page.getByLabel("Founder vision").fill("Help creators");
   await page.getByRole("button", { name: "Create Company" }).click();
   await expect(page.getByRole("heading", { name: "MAH Company" })).toBeVisible();

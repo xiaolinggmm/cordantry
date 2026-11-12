@@ -6,11 +6,27 @@ import { expect, it, vi } from "vitest";
 import { LanguageProvider } from "../ui/language";
 import { Onboarding } from "./Onboarding";
 
+it("shows the four-scene explainer before the Founder Vision form", async () => {
+  const user = userEvent.setup();
+  render(<LanguageProvider><Onboarding onCreate={vi.fn()} /></LanguageProvider>);
+
+  expect(screen.getByRole("heading", { name: "Turn a vision into a company plan." })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Plan/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Delegate/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Progress/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Decide/ })).toBeInTheDocument();
+  expect(screen.queryByLabelText("Founder vision")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Create directly" }));
+  expect(screen.getByLabelText("Founder vision")).toBeInTheDocument();
+});
+
 it("asks only for the Founder Vision and submits no execution settings", async () => {
   const submit = vi.fn();
   const user = userEvent.setup();
   render(<LanguageProvider><Onboarding onCreate={submit} /></LanguageProvider>);
 
+  await user.click(screen.getByRole("button", { name: "Create directly" }));
   expect(screen.getByLabelText("Founder vision")).toBeInTheDocument();
   expect(screen.queryByLabelText("Company name")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("CEO agent")).not.toBeInTheDocument();
