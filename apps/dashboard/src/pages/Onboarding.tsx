@@ -4,7 +4,7 @@ import { ArrowRight, X } from "lucide-react";
 import { Button, Label } from "../components/ui";
 import { LanguageSwitch } from "../components/workbench/LanguageSwitch";
 import { useLanguage } from "../ui/language";
-import type { AgentSummary, CreateCompanyInput } from "../api/client";
+import type { CreateCompanyInput } from "../api/client";
 import "./onboarding.css";
 
 const draftKey = "cordantry.onboardingDraft";
@@ -26,12 +26,9 @@ export function Onboarding({
 }: {
   onCancel?(): void;
   review?: boolean;
-  agents?: AgentSummary[];
   onCreate?(input: CreateCompanyInput): void;
   isCreating?: boolean;
   error?: string | null;
-  agentLoadState?: string;
-  onDetectAgents?(): void;
 }) {
   const { language } = useLanguage();
   const zh = language === "zh";

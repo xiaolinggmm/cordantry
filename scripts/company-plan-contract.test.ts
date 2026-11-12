@@ -17,7 +17,6 @@ it("serves the receipt and public Company Plan snapshot through the real Dashboa
   const server = createApiServer({
     projectRoot,
     repositories,
-    agents: [],
     companyPlanProvider: async () => ({
       schemaVersion: 1,
       company: { name: "Creator Studio" },

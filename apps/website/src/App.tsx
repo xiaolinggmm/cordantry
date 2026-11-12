@@ -115,10 +115,10 @@ function App() {
             <div className="nav-faq-head"><span>FAQ</span><button type="button" aria-label="Close FAQ" onClick={() => setFaqOpen(false)}><X size={18} /></button></div>
             <div className="faq-list">
               <details><summary>Is Cordantry another AI chat app?<span>+</span></summary><p>No. It turns a goal into coordinated roles, handoffs, decisions, and verified outcomes.</p></details>
-              <details><summary>Does it require several different AI models?<span>+</span></summary><p>No. Roles can use different supported Agent backends, but a multi-model setup is not required.</p></details>
+              <details><summary>Does it require several different AI models?<span>+</span></summary><p>No. MAH selects from the Agents you have configured; a multi-model setup is not required.</p></details>
               <details><summary>When does Cordantry interrupt me?<span>+</span></summary><p>Only for founder judgment, sensitive permission, or a decision that materially changes the work.</p></details>
               <details><summary>Where does my work run?<span>+</span></summary><p>On your computer, against the local project you choose.</p></details>
-              <details><summary>What do I need to get started?<span>+</span></summary><p>Cordantry and a supported local Agent CLI, such as Codex or Claude Code.</p></details>
+              <details><summary>What do I need to get started?<span>+</span></summary><p>Cordantry, MAH, and at least one Agent configured in MAH.</p></details>
             </div>
           </div>
         )}

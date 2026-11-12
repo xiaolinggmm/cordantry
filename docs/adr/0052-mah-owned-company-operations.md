@@ -7,7 +7,7 @@ date: 2026-11-06
 
 Cordantry will remove its direct Codex and Claude Code dispatch layer. MAH is the only execution plane. MAH selects Agents and models, schedules Tasks, manages workspaces and retries, and owns Direction, Roadmap, Slice, Change Request, Work and Help Case execution objects. Cordantry owns the Founder-facing company model and translates MAH facts into company language.
 
-This decision supersedes ADR 0050, both ADR 0051 files, and the direct-execution boundary retained from ADR 0049. It does not claim that the target is implemented. The existing code and historical documents remain migration evidence until the replacement is delivered.
+This decision supersedes ADR 0050, both ADR 0051 files, and the direct-execution boundary retained from ADR 0049. Historical ADRs remain decision evidence; they are not compatibility requirements.
 
 ## Decision
 
@@ -54,7 +54,7 @@ One Company Planning Operation gets at most two automatic structural corrections
 - Company creation returns a Company Creation Receipt. The Company State Snapshot contains objectives, Departments and Department Assignments, not legacy Cordantry Tasks or MAH Tasks.
 - An unknown MAH planning submission stays in Company Planning Reconciliation with the same Task identity. It does not become a confirmed creation failure because one command ended.
 - Pre-Company-Plan company data is test data and has no migration or compatibility contract. Cutover clears the old Cordantry company operational data. It does not clear MAH project data, Agent login state or application configuration.
-- Cutover uses one versioned Cordantry data-format transaction. It clears old operational records once and records the new format version. It does not delete workspace files or run again on later starts.
+- The pre-production cutover uses a fresh Cordantry schema with no old SQLite migration or compatibility path. Existing test databases can be deleted only after verification; MAH project data, Agent login state, application configuration, and workspaces are preserved.
 - Every Assignment has one Assignment Business Status and one route-specific Assignment Stage. Neither field exposes MAH execution state.
 - Every ordinary Assignment has one internal Assignment Execution Binding. Cordantry persists it before MAH submission and reuses its stable Task identity during reconciliation.
 - Every Founder surface uses Founder-facing Plain Language. The Company Status page replaces Operations Diagnostics and never displays raw execution data.

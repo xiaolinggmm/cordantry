@@ -1,182 +1,140 @@
 # Architecture
 
-Cordantry is a local-first TypeScript system that coordinates local AI agents as a small operating company.
+Cordantry is a local-first TypeScript company operations system. MAH is its only Agent execution
+plane. [ADR 0052](adr/0052-mah-owned-company-operations.md) is the decision authority and
+[GLOSSARY.md](../GLOSSARY.md) defines product terms.
 
-## Runtime Loop
+## Runtime loop
 
 ```text
 Founder Vision
-  -> CEO Office
-  -> OKR System
-  -> Departments
-  -> Lead Agents and Worker Agents
-  -> Proof and Assets
-  -> Review
-  -> OKR Update
-  -> Next Cycle
+  -> MAH Company Planning Task
+  -> validated Company Plan
+  -> Objectives, Departments, and Department Assignments
+  -> Workflow Coordinator activates ready ordinary Assignments
+  -> MAH selects an Agent/model and executes its Task
+  -> schema-valid Assignment Result and Judgment
+  -> accepted Result completes the Assignment and activates dependents
 ```
 
-The user starts with an intent and assets. The CEO Office converts that input into a company blueprint: objectives, key results, departments, tasks, proof expectations, and priorities. The runtime stores that blueprint, creates local workspaces, dispatches tasks to agents, captures proof, reviews work against key results, and prepares the next cycle.
+Cordantry owns the Company model, structural contracts, business dependencies, stable cross-system
+bindings, accepted Results, and Founder-facing projections. MAH owns Agent/model selection, capacity,
+execution, retries, workspaces, governance acceptance, and execution recovery.
+
+There is no direct Codex/Claude adapter, provider availability router, local execution scheduler, or
+fallback execution plane in Cordantry.
 
 ## Packages
 
-- `@cordantry/core`: shared TypeScript types and Zod schemas.
-- `@cordantry/server`: SQLite persistence, workspace creation, adapters, policies, playbooks, runtime orchestration, REST, and SSE.
-- `@cordantry/cli`: local entrypoint for starting the runtime.
-- `@cordantry/dashboard`: React dashboard for onboarding, activation, monitoring, proof, review, and kill switch controls.
+- `@cordantry/core`: Company, Objective, Department, Assignment types and Zod boundary schemas.
+- `@cordantry/server`: fresh SQLite persistence, MAH CLI boundary, Workflow Coordinator, REST, SSE,
+  and static Dashboard serving.
+- `@cordantry/cli`: local runtime entrypoint and coordinator loop.
+- `@cordantry/dashboard`: Founder Vision onboarding and Company Plan/Assignment status projection.
+- `@cordantry/desktop`: Electron shell that starts the same in-process MAH-only runtime.
 
-## Dashboard Interface
+## Persistence
 
-The dashboard uses a reusable flat CRT / Classic Macintosh interface layer rather than page-specific controls. Shared UI lives under `apps/dashboard/src/ui/`:
-
-- `crt/`: global CRT viewport, display presets, and quality handling.
-- `layout/`: shell, page header, and workspace layout primitives.
-- `menu/`: reusable application menu components.
-- `retro/`: hard-edged form, button, panel, badge, textarea, select, and status primitives.
-- `theme/`: palette skins and theme state.
-
-The application menu is inside the CRT screen face at the top of the dashboard. `DashboardMenuBar` maps runtime state to reusable menu groups:
-
-- `Cordantry`: product-level commands.
-- `Company`: create company, and pause or resume operating.
-- `Agents`: detected CEO agents, current-agent checked state, and disabled unavailable agents.
-- `Work`: task and department navigation.
-- `Proof`: load proof, load review, and evidence navigation.
-- `View`: skin submenu, CRT/fullscreen controls.
-- `Help`: visible disabled placeholders for documentation-oriented commands.
-
-The menu model is shared across onboarding and dashboard pages. Desktop shows the full menu strip; mobile collapses the same command model into one `Menu` entry. Disabled commands stay visible, command items expose checked and shortcut metadata, and submenu state is reusable so future command-palette work can consume the same action model.
-
-## Storage
-
-Structured state is stored in SQLite:
-
-```text
-.cordantry/state.sqlite
-```
-
-File-based memory and artifacts are stored under the operated project:
+Cordantry stores local state in:
 
 ```text
 .cordantry/
-  companies/<companyId>/
-    departments/<departmentId>/Memory.md
-    tasks/
-    artifacts/
-    proof/
-    reviews/
-    logs/
-  workspaces/<taskId>/
+  state.sqlite
+  mah-company-planning/
+  mah-assignments/
 ```
 
-The workspace layer rejects paths that escape the project root.
+The fresh schema contains:
 
-## API Surface
+- `companies`
+- `mah_company_planning`
+- `company_problems`
+- `company_events`
+- `objectives`
+- `departments`
+- `department_assignments`
+- `assignment_execution_bindings`
+- `assignment_results`
 
-The local API server currently exposes:
+Legacy Cordantry Task, Run, Agent Session, execution trace, provider-routing, execution-mode, slot,
+and CLI-path data has no migration or compatibility path.
+
+## Company Planning
+
+Company creation accepts only Founder Vision and an optional idempotency key. When application
+runtime configuration supplies a MAH project, Cordantry:
+
+1. persists the Company and planning identity;
+2. pre-mints a stable MAH Task ID;
+3. submits the Company Plan schema and planning description;
+4. reconciles ambiguous submission by querying that same ID;
+5. reads `artifacts/company-plan.json`;
+6. validates identities, references, routes, stages, order, and dependency acyclicity;
+7. atomically creates the organization and activates the Company.
+
+MAH unavailability produces a typed Company Problem. It never selects a local Agent fallback.
+
+## Assignment coordination
+
+The Workflow Coordinator considers only `ordinary_task` Assignments whose business dependencies are
+complete. Before submission it persists an Assignment Execution Binding containing the stable MAH
+Task identity, project root, and request digest.
+
+After MAH reports a terminal result, Cordantry reads
+`artifacts/assignment-result.json`. Completion requires a schema-valid Assignment Result and an
+Assignment Result Judgment. The Judgment preserves `agentId` and `modelId` for audit, but those
+values never control routing.
+
+Canonical artifacts can become readable shortly after a Task status update. Cordantry therefore
+reconciles an unreadable completed Result or evidence within a bounded deadline, using the same Task
+identity. It does not resubmit the Assignment or invoke another execution plane.
+
+Result acceptance, Assignment completion, and activation of direct dependents occur in one SQLite
+transaction. A different digest cannot replace an accepted Result.
+
+Product Direction is a distinct route. It remains waiting until its Founder/MAH Direction and
+Roadmap flow is implemented; the ordinary coordinator never submits it as ordinary work.
+
+## API
 
 Reads:
 
-- `GET /api/agents`
 - `GET /api/companies`
-- `GET /api/companies/:id/state` — the full company snapshot the dashboard renders
-- `GET /api/companies/:id/reviews`
-- `GET /api/tasks/:id/proof`
-- `GET /api/events` for Server-Sent Events
+- `GET /api/companies/:id/state`
+- `GET /api/events?companyId=...`
 
-Company lifecycle:
+Mutations:
 
-- `POST /api/companies` — the company runs as soon as its blueprint is written (ADR 0044)
-- `POST /api/companies/:id/retry-creation` — optionally with edited input
-- `POST /api/companies/:id/pause`, `POST /api/companies/:id/resume`
-- `POST /api/companies/:id/stop` — final; a Final Founder Report follows
-- `POST /api/companies/:id/ceo-intakes`
+- `POST /api/companies`
+- `POST /api/companies/:id/retry-creation`
+- `POST /api/companies/:id/pause`
+- `POST /api/companies/:id/resume`
+- `POST /api/companies/:id/stop`
 
-Moving a stopped task forward — each of these is a Resume Affordance, and each is guarded by one:
+The public snapshot contains only Company, Objective, Department, Assignment, dependency, business
+stage/status, typed Problem, and accepted Result projections. It never exposes MAH Task IDs, commands,
+prompts, raw logs, workspaces, or legacy Task/Run/Agent execution objects.
 
-- `POST /api/ceo-review-decisions` — approve or return work awaiting CEO Office
-- `POST /api/founder-decisions` — resolve a Founder Decision
-- `POST /api/approvals/:id` — grant or deny Founder Approval before dispatch
-- `POST /api/companies/:id/human-actions/:actionId/confirm` — submit evidence a Human Action was done
-- `POST /api/tasks/:id/refresh` — re-derive dependency readiness, or recapture proof from the workspace
-- `POST /api/tasks/:id/recover` — re-run the work, or continue it from Partial Output
-- `POST /api/tasks/:id/replan-proposals` — ask the CEO Agent for a replan
-- `POST /api/replan-proposals/:id/confirm` — accept a replan and rewire dependencies
-- `POST /api/tasks/:id/cancel`
+## Company controls
 
-SSE is used for task logs and status updates.
+Pause prevents admission of new Assignments. Already admitted MAH work can continue to a confirmed
+result. Resume wakes the Workflow Coordinator. Stop prevents new work and preserves accepted Results.
 
-### Task summaries carry their own affordances
+## Verification
 
-Every task the API serializes includes `holds` (why it is stopped, who owns it, what it waits on) and `affordances` (what can be done to it right now). Clients render actions from that list and never re-derive eligibility from status and failure reason — see ADR 0020 and `apps/server/CONTEXT.md`.
+Required release checks are:
 
-The route that performs an action checks the same affordance before doing it. A stale request is answered `409` with the task's current `holds` and `affordances` in the body, not with a bare error, so a client looking at a view the runtime has moved past can show the real next action instead of a dead end.
+- `pnpm typecheck`
+- `pnpm test`
+- `pnpm build`
+- Dashboard Playwright E2E
+- `CORDANTRY_MAH_PROJECT_ROOT=... pnpm smoke:mah` for a real
+  Founder → MAH → Assignment → Result flow
 
-## Agents
+The fresh-schema and no-fallback contracts are pinned by automated tests.
 
-Agents implement a small adapter interface:
-
-- `id`
-- `name`
-- `capabilities`
-- `detect()`
-- `run()`
-
-Built-in adapter factories exist for Claude Code and Codex. Custom agents can still be added as command templates with capability tags and interpolation for `{workspace}` and `{promptPath}`.
-
-The built-in two no longer use a fixed command template. Each Agent Run carries an **Agent Capability Grant** — what the task needs (`workspace_read`, `workspace_write`, `run_command`, `web_research`), intersected with what the company's Permission Mode allows — and the adapter turns that grant into launch flags. The launch is fail-closed: shell and code-running tools removed, user/project/local settings files ignored, host MCP servers skipped, file tools confined to the working directory, and anything that would prompt denied. Capabilities come back only because the grant named them. A run therefore behaves the same on every machine, and a research task can actually search the web. See ADR 0021.
-
-## Playbooks
-
-Playbooks define how a company should be assembled for a class of work. The first complete playbook is AI tools / SaaS and creates:
-
-- Product
-- Research
-- Growth
-- Engineering
-
-Each playbook defines department templates, OKR templates, task templates, proof schemas, and review criteria.
-
-## CEO Office And OKR System
-
-The CEO Office prompt includes founder vision, selected playbook, available agents, existing assets, permission mode, and a required strict JSON schema. The parser ignores prose and validates only the fenced JSON payload.
-
-The OKR system stores objectives, key results, task priorities, and review outputs so the runtime can keep working after the first prompt.
-
-## Scheduler
-
-The scheduler claims queued tasks from SQLite with locks, creates isolated task workspaces, dispatches work to a matching agent, writes logs, emits SSE events, captures proof, and moves tasks to review, failed, or blocked states.
-
-Every one of those state moves goes through `applyTaskTransition`, the single writer of task status. A task that stops carries a Task Hold saying why it stopped and who can restart it; a task the runtime is carrying carries none. Before dispatch the scheduler also checks the company's Permission Mode, and a task needing Founder Approval is held on its Approval record rather than run. See `apps/server/CONTEXT.md`.
-
-## Proof And Review
-
-Proof can include:
-
-- files
-- diffs
-- command output
-- local URLs
-- screenshots
-- optional deployment URLs
-
-Proof is validated against the task proof schema before a task can be treated as review-ready. Reviews compare proof against key results and write review markdown into the company workspace.
-
-## Permission Modes
-
-- Safe: most conservative local execution.
-- Balanced: default. Workspace reads/writes, safe commands, and public web reads are automatic; install/deploy ask; outside-workspace writes and paid actions are denied.
-- Autonomous: broader automatic execution for trusted local use, while destructive or paid actions remain policy-controlled.
-
-Permission Mode decides two things: whether a task needs Founder Approval before it is dispatched, and which Runtime Capabilities its Agent Capability Grant may contain. It can only narrow a grant — a task never receives a capability it did not need, however permissive the mode.
-
-## Kill Switch
-
-The global kill switch sets global pause, prevents new scheduler claims, cancels running agent runs, releases task locks, and moves the company into review.
-
-## Known Limits
+## Known limits
 
 - `node:sqlite` is experimental on Node 24.
-- Public macOS releases need an Apple signing identity and notarization secrets to avoid Gatekeeper warnings.
-- Approval decision UI and real-agent smoke tests remain planned.
-- Playwright E2E requires a working Chromium environment.
+- Public macOS releases need signing and notarization.
+- Product Direction delivery and the broader Founder Inbox remain future slices.

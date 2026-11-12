@@ -16,11 +16,11 @@ export async function runAssignmentCoordinatorOnce(input: {
   createTaskId?: () => string;
   now?: () => Date;
   reconciliationTimeoutMs?: number;
-  requestSchedulerWake?: () => void;
+  requestCoordinatorWake?: () => void;
 }): Promise<void> {
   const now = input.now ?? (() => new Date());
   for (const company of input.repositories.listCompanies()) {
-    if (company.playbookId !== "mah-company-plan" || !["active", "paused", "stopped"].includes(company.status)) continue;
+    if (!["active", "paused", "stopped"].includes(company.status)) continue;
     const assignments = input.repositories.listDepartmentAssignments(company.id);
     for (const assignment of assignments) {
       if (assignment.route.kind !== "ordinary_task") continue;
@@ -162,12 +162,14 @@ async function settleObservation(
     return;
   }
   if (observation.status !== "completed") {
+    const observedAt = now();
     if (binding.state !== "admitted") {
       input.repositories.assignmentExecution.saveBinding({
         ...binding,
         state: "admitted",
         detail: "Assignment work is in progress.",
-        updatedAt: now().toISOString(),
+        reconciliationDeadline: new Date(observedAt.getTime() + (input.reconciliationTimeoutMs ?? 10 * 60_000)).toISOString(),
+        updatedAt: observedAt.toISOString(),
       });
     }
     return;
@@ -177,7 +179,12 @@ async function settleObservation(
   let context: { content?: string | null } | null = null;
   try { context = JSON.parse(response.stdout) as { content?: string | null }; } catch { /* handled below */ }
   if (response.exitCode !== 0 || typeof context?.content !== "string") {
-    stopAssignment(input.repositories, assignment, binding, "Assignment result is missing or unreadable.", now(), "acceptance");
+    const observedAt = now();
+    if (observedAt.getTime() >= new Date(binding.reconciliationDeadline).getTime()) {
+      stopAssignment(input.repositories, assignment, binding, "Assignment result is missing or unreadable.", observedAt, "acceptance");
+    } else {
+      input.repositories.assignmentExecution.saveBinding({ ...binding, state: "admitted", detail: "Waiting for the completed Assignment result to become readable.", updatedAt: observedAt.toISOString() });
+    }
     return;
   }
   let result;
@@ -196,7 +203,12 @@ async function settleObservation(
     let evidenceBody: { content?: string | null } | null = null;
     try { evidenceBody = JSON.parse(evidence.stdout) as { content?: string | null }; } catch { /* handled below */ }
     if (evidence.exitCode !== 0 || typeof evidenceBody?.content !== "string") {
-      stopAssignment(input.repositories, assignment, binding, "Assignment evidence is missing or unreadable.", now(), "acceptance");
+      const observedAt = now();
+      if (observedAt.getTime() >= new Date(binding.reconciliationDeadline).getTime()) {
+        stopAssignment(input.repositories, assignment, binding, "Assignment evidence is missing or unreadable.", observedAt, "acceptance");
+      } else {
+        input.repositories.assignmentExecution.saveBinding({ ...binding, state: "admitted", detail: "Waiting for completed Assignment evidence to become readable.", updatedAt: observedAt.toISOString() });
+      }
       return;
     }
   }
@@ -222,7 +234,7 @@ async function settleObservation(
       });
     }
   });
-  if (result.judgment.decision === "accepted") input.requestSchedulerWake?.();
+  if (result.judgment.decision === "accepted") input.requestCoordinatorWake?.();
 }
 
 function stopAssignment(
@@ -271,6 +283,7 @@ function writeAssignmentRequest(root: string, binding: AssignmentExecutionBindin
     `Complete this Department Assignment: ${assignment.title}`,
     `Expected outcome: ${assignment.expectedOutcome}`,
     "Write the canonical business result to artifacts/assignment-result.json.",
+    "Every judgment.evidenceReferences item must be a Task artifact path beginning with artifacts/. Never cite an absolute path, .mah path, context attachment, prompt, or governance file. Use an empty array when no additional artifact evidence is needed.",
     `Assignment ID: ${assignment.id}`,
     upstream.length ? `Accepted upstream results: ${JSON.stringify(upstream)}` : "There are no upstream results.",
   ].join("\n\n"), "utf8");
@@ -290,6 +303,6 @@ const assignmentResultOutputSchema = {
     resultSummary: { type: "string", minLength: 1 }, keyFindings: { type: "array", items: { type: "string", minLength: 1 } }, completedOutcome: { type: "string", minLength: 1 }, limitations: { type: "array", items: { type: "string", minLength: 1 } },
     downstreamFacts: { type: "array", items: { type: "object", additionalProperties: false, required: ["key", "value"], properties: { key: { type: "string", minLength: 1 }, value: { type: "string", minLength: 1 } } } },
     recommendedNextAction: { type: "string", minLength: 1 },
-    judgment: { type: "object", additionalProperties: false, required: ["decision", "rationale", "satisfiedObligations", "unsatisfiedObligations", "evidenceReferences", "agentId", "modelId"], properties: { decision: { enum: ["accepted", "rejected"] }, rationale: { type: "string", minLength: 1 }, satisfiedObligations: { type: "array", items: { type: "string", minLength: 1 } }, unsatisfiedObligations: { type: "array", items: { type: "string", minLength: 1 } }, evidenceReferences: { type: "array", items: { type: "string", minLength: 1 } }, agentId: { type: "string", minLength: 1 }, modelId: { type: "string", minLength: 1 } } },
+    judgment: { type: "object", additionalProperties: false, required: ["decision", "rationale", "satisfiedObligations", "unsatisfiedObligations", "evidenceReferences", "agentId", "modelId"], properties: { decision: { enum: ["accepted", "rejected"] }, rationale: { type: "string", minLength: 1 }, satisfiedObligations: { type: "array", items: { type: "string", minLength: 1 } }, unsatisfiedObligations: { type: "array", items: { type: "string", minLength: 1 } }, evidenceReferences: { type: "array", items: { type: "string", minLength: 1, pattern: "^artifacts/(?!.*(?:^|/)\\.\\.(?:/|$)).+" } }, agentId: { type: "string", minLength: 1 }, modelId: { type: "string", minLength: 1 } } },
   },
 };

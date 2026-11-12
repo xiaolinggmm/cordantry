@@ -1,8 +1,8 @@
 # Cordantry
 
-Cordantry is an open-source runtime for local AI agents.
+Cordantry is an open-source company operations interface backed by MAH.
 
-You give Cordantry a company goal. A local agent acts as the CEO. The CEO creates goals, departments, tasks, and handoffs. Other agents do the work. Cordantry checks the results and asks for your decision when human judgment is required.
+You give Cordantry a Founder Vision. Cordantry asks MAH to produce a company plan, projects that plan as departments and assignments, and submits ready work back to MAH. MAH selects and runs Codex, Claude Code, or another available Agent. Cordantry checks business results and asks for your decision when human judgment is required.
 
 Cordantry runs on your computer. It works inside a project that you select.
 
@@ -14,13 +14,14 @@ Cordantry runs on your computer. It works inside a project that you select.
 
 ## How It Works
 
-1. Name the company and state its goal.
-2. Select Claude Code or Codex as the CEO agent.
-3. The CEO creates a company plan.
-4. Cordantry assigns work to agents.
-5. Each agent submits a result and evidence.
-6. Cordantry checks the work and its dependencies.
-7. You review important decisions and outcomes.
+1. State the Founder Vision.
+2. Cordantry submits Company Planning to MAH.
+3. A MAH-selected Agent produces the company plan.
+4. Cordantry validates the plan and shows its departments and assignments.
+5. Cordantry submits ready assignments to MAH.
+6. MAH-selected Agents submit results and evidence.
+7. Cordantry checks the results and dependencies.
+8. You review important decisions and outcomes.
 
 Cordantry stores the plan, work, evidence, and review history. You can add direction, pause the company, or stop it at any time.
 
@@ -35,8 +36,8 @@ Cordantry returns strategic choices to you. It shows the available options, trad
 Use the desktop app for normal use.
 
 1. Download the [latest release](https://github.com/xiaolinggmm/cordantry/releases/latest).
-2. Install Claude Code or Codex.
-3. Sign in to the installed agent.
+2. Install and set up MAH.
+3. Make at least one MAH-supported Agent available on the machine.
 4. Start Cordantry.
 5. Select the local project that Cordantry may use.
 
@@ -44,17 +45,7 @@ The desktop app includes the runtime and dashboard. It does not include Claude C
 
 ## Configure a Company
 
-The setup form asks for four main values.
-
-### Company name
-
-Enter a name that identifies the company.
-
-### CEO agent
-
-Select a detected Claude Code or Codex installation. The CEO agent creates the plan and assesses later direction.
-
-### Founder vision
+The setup form asks only for the Founder Vision.
 
 State the result that you want. Include the target user, the required outcome, and important limits.
 
@@ -62,16 +53,7 @@ Example:
 
 > Build a local web tool for freelance designers. The tool must turn a project brief into a client proposal. Deliver a working prototype and a validation report. Do not publish the tool or use paid services without my approval.
 
-### Execution mode
-
-Select the mode when you create the company. You cannot change it later.
-
-- **Direct dispatch** starts the assigned local agent. This is the default mode.
-- **MAH coordination** delegates each task to an existing MAH project.
-
-MAH coordination requires the MAH project path. It also requires the `mah` executable. The default execution slot is `background`.
-
-The current dashboard uses `balanced` permission mode. This mode allows normal work inside the task workspace. High-impact actions still require approval or remain blocked.
+Company creation does not ask for an execution mode, Agent, CLI path, or project path. Set `CORDANTRY_MAH_PROJECT_ROOT` in the application runtime. Cordantry never falls back to direct Codex or Claude Code execution when MAH is unavailable.
 
 ## Run From Source
 
@@ -80,7 +62,7 @@ Requirements:
 - Node.js 24 or newer
 - pnpm 11 or newer
 - Git
-- Claude Code or Codex for real agent runs
+- MAH, with at least one supported Agent ready for real runs
 
 Install the project:
 
@@ -95,12 +77,14 @@ Run the checks:
 ```bash
 pnpm test
 pnpm typecheck
+pnpm build
 ```
 
 Start Cordantry for a local project:
 
 ```bash
 INIT_CWD=/absolute/path/to/your/project \
+CORDANTRY_MAH_PROJECT_ROOT=/absolute/path/to/your/mah-project \
 CORDANTRY_PORT=8787 \
 pnpm --filter @cordantry/cli start
 ```
@@ -127,9 +111,8 @@ Cordantry writes state and work files inside the selected project:
 ```text
 .cordantry/
   state.sqlite
-  supervisor.sqlite
-  companies/
-  workspaces/
+  mah-company-planning/
+  mah-assignments/
 ```
 
 Use version control before you start a company. Do not select a project unless you accept local file changes in that project.
@@ -139,7 +122,7 @@ Use version control before you start a company. Do not select a project unless y
 - [Quick start](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
 - [Desktop installation](docs/desktop-distribution.md)
-- [Execution settings](docs/execution-budget-opt-in.md)
+- [MAH-owned company operations](docs/mah-owned-company-operations.md)
 - [Project terms](GLOSSARY.md)
 
 ## License

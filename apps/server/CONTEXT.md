@@ -1,206 +1,38 @@
 # Server Context
 
-The API server, its persistence, and the runtime that dispatches work. System-wide vocabulary lives in the root `CONTEXT.md`; this file covers the rules that only apply inside `apps/server`.
+The server owns Cordantry's Founder-facing Company model and its projection of MAH facts. System-wide
+vocabulary lives in the root `CONTEXT.md` and `GLOSSARY.md`.
 
-Read this before changing anything that moves a task between states, decides what a founder can do to a task, or adds an API route that mutates a task.
+## Execution boundary
 
-## Task State Is Written In Exactly One Place
+- MAH is the only execution plane. Server code must never select, launch, probe, or fall back to
+  Codex, Claude Code, or another Agent.
+- Company Planning and ordinary Department Assignments use MAH's public Task interface.
+- Persist an Assignment Execution Binding before submission. Reconciliation reuses its stable MAH
+  Task identity.
+- Accept only a schema-valid Assignment Result. The Result Judgment retains `agentId` and
+  `modelId` for audit; those fields do not become routing inputs.
+- MAH unavailability produces a typed Company Problem. It must not activate a direct execution path.
 
-`applyTaskTransition` (`src/runtime/taskTransition.ts`) is the only code permitted to write `tasks.status`. The repository method it calls is named `writeTaskStatusUnchecked` so a bypass is visible on sight, and `taskTransition.test.ts` fails the build when a new production file calls it.
+## Persistence
 
-The seam exists because task status alone never said *why* a task stopped or *who* could restart it. That answer lived in four unrelated facts nothing kept in sync, and they drifted — see ADR 0020 for the failure that produced this design.
+The fresh schema contains Company Planning, Company, Objective, Department, Department Assignment,
+Assignment Execution Binding, Assignment Result, Company Problem, and Company Event data. Legacy
+Task, Run, Agent Session, direct-provider, execution-mode, slot, and CLI-path fields have no
+compatibility contract.
 
-Every transition goes through the seam, which enforces:
+Assignment Result acceptance, Assignment completion, and activation of direct dependents happen in
+one transaction. A different digest cannot replace an accepted Result.
 
-- **Parked implies held.** Landing in a Held Task Status opens a Task Hold — the declared one, or one derived from the execution summary when the caller declares none. Landing in a self-propelling or terminal status resolves every open Hold.
-- **Status-bound Holds cannot outlive their status.** `awaiting_ceo_review` is only coherent in `review`, `needs_replan` only in `needs_replan`. Leaving either resolves the Hold as `superseded` in the same write. Which status a kind binds to is declared *with the kind*, in core's `taskHoldStatusBinding` — exhaustive over the union, so a kind added later cannot skip the question. A Hold outliving its status is the mechanism of the original failure, and the defence against it must not be a list someone can forget to append to.
-- **Idempotence.** Re-parking for a reason the task is already held on reuses the open Hold. A Hold per distinct subject, so two concurrent waits stay separately visible.
+## Public API
 
-### Status classes
+Company creation accepts only Founder Vision and an optional idempotency key. Public state uses
+Founder-facing business language and never exposes MAH Task identity, commands, logs, workspaces,
+prompts, or legacy Task/Run/Agent objects.
 
-| Class | Statuses | Open Holds |
-| ----- | -------- | ---------- |
-| Self-propelling | `queued`, `running`, `retrying` | none — the runtime owns it |
-| Held | `waiting_dependency`, `blocked`, `review`, `needs_replan`, `failed` | at least one |
-| Terminal | `complete`, `cancelled` | none |
+Pause stops new Assignment admission. Stop prevents new work and preserves accepted Results.
 
-`waiting_dependency` is a Held Task Status on purpose: "waiting on upstream task X" is a Hold with a subject, and modelling it as one is what lets a surface name the task being waited on instead of repeating a generic badge.
+## Verification
 
-## What A Founder Can Do Is Computed, Never Re-Derived
-
-`resolveTaskAffordances` (`packages/core/src/taskHold.ts`) maps open Holds to Resume Affordances. It is pure and exhaustive over `TaskHoldKind`: a new Hold kind will not compile without declaring how it is resolved, and the test suite rejects one whose only offer is cancellation.
-
-Server-side, `resolveTaskAffordanceState` binds it to stored facts and `checkTaskAffordance` guards mutating routes. Both live in `src/runtime/taskAffordances.ts`.
-
-Three rules follow, and breaking any of them reintroduces the ADR 0020 bug:
-
-1. **Guards check affordances, not status.** A route that mutates a task asks whether the task currently offers that affordance. It must be the same computation the surface used to offer it.
-2. **Refusals are not dead ends.** An affordance refusal returns 409 with the task's current `holds` and `affordances`, so a founder acting on a stale view is redirected to the real next action.
-3. **Clients never decide eligibility.** Every task summary carries `holds` and `affordances`; the dashboard renders from that list alone. An eligibility rule kept on both sides is a rule that drifts.
-
-Two affordances have runtime state preconditions — refresh and recover. Those are declared once, in core's `affordanceStatusGates`, and reached through `isAffordanceApplicable`. `taskRefresh` and `taskRecovery` call that function rather than restating the rule next to the implementation: a second copy of a precondition is how the offer and the guard drifted apart in the first place.
-
-### Adding an affordance
-
-An affordance that no route honours is worse than no affordance: it renders a button that silently does nothing. `taskAffordanceCoverage.test.ts` pins every `TaskAffordanceKind` to a route that actually changes state. A new kind must ship with its route in the same change.
-
-## Pausing And Stopping A Company Never Rewrites A Live Task
-
-Pause Operating and Stop Operating change the company status, then ask its live runs to stop through the execution registry. They never write the task. The scheduler settles a stopped run once its process exits: `company_paused` puts the task back in `queued`, and any other stop reason cancels it (`settleStoppedTask`). A workspace is shared by the runs of a task, so a task requeued under a live agent would let the next dispatch start in a directory something else is writing to. See ADR 0044.
-
-## Reconciliation Passes
-
-The runtime repairs state on read rather than trusting every writer. Two passes run during `buildCompanyState`, and the distinction between them matters:
-
-- `reconcileStaleRunningTasks` — a run whose deadline passed while nobody was watching.
-- `reconcileTaskHolds` — **standing, never marked**. It repairs the Hold invariant from current facts on every read, and also runs whenever one task's affordances are resolved, because a founder can act on a task without loading the board first. It is deliberately not a migration: the drift it repairs is a recurring class of mistake, not a one-time schema change.
-
-`reconcileTaskHolds` may sharpen the unattributed `runtime_interrupted` fallback using facts the pure rule cannot see — an upstream that still owes a deliverable makes it a dependency wait, not an unknown interruption. Refinement only ever narrows the fallback; an attributed Hold is left exactly as derived.
-
-## Permission Mode Reaches The Agent Process, Not Just The Scheduler
-
-An Agent Run executes under an **Agent Capability Grant**: what the task needs, intersected with what the company's Permission Mode allows. `resolveAgentCapabilityGrant` (`src/policies/capabilityGrant.ts`) is the only place that decides it, and an adapter translates a grant into its own launch flags without looking at the task.
-
-Before this existed, the launch was one constant — `claude -p --permission-mode acceptEdits` — which auto-approves file edits and nothing else. A research task's `WebSearch` was denied by a prompt no non-interactive run can answer; the agent called that a sandbox and shipped estimates as a deliverable. See ADR 0021.
-
-Three rules follow:
-
-1. **Fail closed, then grant back.** The base launch removes shell and code-running tools, ignores user/project/local settings files, skips host MCP servers, confines file tools to the working directory, and denies anything that would prompt. A capability exists only because the grant named it. A run must never depend on what the operator's machine happens to have configured.
-2. **The prompt states the grant.** `buildTaskExecutionPrompt` emits a `## Granted Capabilities` section. An agent that discovers a denial mid-run has no vocabulary for it and invents one.
-3. **A capability blocker is refutable.** `verifyEnvironmentBlockerClaim` rejects an Environment-Blocked Blocker naming a capability the run was granted. This is the mirror of ADR 0016: there, runtime-held evidence confirms a claim the agent cannot prove; here it refutes one the agent should not have filed. A capability the runtime does not grant (`browser_screenshot`, `keyword_data`) is never refuted — see `GRANTABLE_CAPABILITY_ALIASES`.
-
-The same principle governs what comes back. A run whose reply the runtime parses declares a **Structured Output Contract** — a JSON Schema on the request, which Claude Code takes inline via `--json-schema` and Codex takes as a file via `--output-schema`. The prompt still explains the shape; it no longer guarantees it. A reply that misses the contract fails as `invalid_agent_output`, not `agent_failed`, because the process answered and the expectation was the runtime's. See ADR 0022, and add a contract to any new runtime-parsed reply.
-
-The Business Artifact is not an adapter reply. A task delivery enters the runtime only as an **Artifact Envelope** submitted through the Runtime Action Channel's `submit_artifact_envelope` tool; the runtime validates and settles that candidate into a Business Artifact, Proof, Holds, transitions, and completion events (ADR 0041). There is no workspace file to fall back to, so an adapter that cannot submit an envelope is not dispatched. The delivery contract is checked by one function, `artifactEnvelopeContractErrors`, both when the agent submits and at settlement: never add a delivery rule to only one of them.
-
-Do not ask an agent to repeat one generated field as another generated field. Founder Decisions use `recommended_option_index` to point into `open_decisions[].options`; the runtime derives the display recommendation label from that index. A string `recommendation` is legacy compatibility only. This is the same design rule as capability grants and structured output: turn prompt obligations into structure when the runtime can express them.
-
-`approvalRequired` decides whether a task needs Founder Approval before dispatch. It resolves the **company's** Permission Mode through `resolvePolicyForPermissionMode`, not a hardcoded default — a company set to `safe` must actually ask — and asks when any capability the run needs carries an `ask` decision.
-
-A task blocked this way gets an `awaiting_founder_approval` Hold naming its Approval record, and `POST /api/approvals/:id` is what clears it. Denying moves the task to `needs_replan`, because a task whose required action the founder refuses cannot run as specified. Granting goes through `releaseTaskHold`, not a direct transition — see below.
-
-## Clearing One Hold Is Not Unblocking A Task
-
-A task can be held for several reasons at once: waiting on Founder Approval *and* on an upstream deliverable. An actor who answers one of them has said nothing about the others.
-
-The seam is **default-safe** about this, rather than relying on each caller to remember it: a transition into a self-propelling status resolves only the Holds the caller named, and if any Hold is still open the task **does not move**. The caller says what its reason actually answers — `resolvesHoldIds` for a specific Hold, `resolvesHoldKinds` for a reason that addresses a class of them, such as a dependency cascade that just found the upstream ready. Anything it did not account for keeps the task where it is.
-
-That matters more than it sounds: every caller that had to remember this got it wrong. All four answer paths forced `queued`, so answering one Hold read as "nothing is in the way", and the task then advertised itself as about to run while what it still waited on was invisible.
-
-`releaseTaskHold` is a readable shorthand over the same rule, not a different one. A path that ignores it and calls the seam directly still cannot start a task something else is holding.
-
-Any path where an actor answers one specific Hold uses it rather than assuming their answer was the only thing in the way. Today that is all four answer paths:
-
-| Answered | Where | Hold it closes |
-| -------- | ----- | -------------- |
-| Founder Approval | `runtime/founderApproval.ts` | `awaiting_founder_approval` |
-| Human Action confirmed | `confirmHumanAction` in `api/routes.ts` | `awaiting_human_action` — every open one naming that Human Action |
-| Wait State elapsed | `applyWaitStateRouting` in `api/routes.ts` | `awaiting_external_wait` |
-| CEO review returned | `createCeoReviewDecision` in `api/routes.ts` | `awaiting_ceo_review` |
-
-Find the Hold with `findOpenTaskHold(repositories, taskId, kind, subjectId)` — by subject, because two Holds of the same kind on one task are two separate waits, and confirming one Human Action must not be read as confirming another.
-
-`applyTaskTransition` also takes `resolvesHoldIds`, for the case where the actor's answer *and* a new blocking fact land together: a denied approval closes the approval Hold and opens a replan Hold in one write.
-
-The event a released path emits must report the task's **actual** resulting status, not `queued`. "Human Action confirmed; task queued" on a task that is still waiting on an upstream is the same lie in a different place.
-
-The granularity is deliberately coarse: one pre-dispatch question for the whole run, not one per action. That is also why an `ask` decision *grants* the capability rather than withholding it — the consent was already collected, once, before dispatch. Per-action approval during execution, and the per-action grant narrowing that belongs with it, are a separate and larger change.
-
-## Readiness Is Asked Of One Resolver
-
-`resolveDependencyReadiness` is the only answer to "can this task consume its upstream?". Dispatch, parent aggregation, the dependency cascade and Hold reconciliation all call it; a second copy is how aggregation once queued a parent the scheduler parked four seconds later. It classifies each dependency as internal (a subtask consumed by its parent or a sibling) or ordinary, and applies that relation's rule (ADR 0024).
-
-A department subtask never goes through acceptance. Its delivery parks in `review` under `awaiting_parent_aggregation`, and `deriveTaskHold` maps a subtask in `review` to that kind so reconciliation cannot rebuild a CEO review. The parent's acceptance ends those Holds.
-
-## Acceptance Reads Declarations, Not Prose
-
-`evaluateAutomaticAcceptance` decides from the delivery's Action Intent declaration (`payload.actions`): `performed` or `requested` goes to CEO Office, `considered` and `[]` do not. The text patterns remain only for artifacts written before the contract, which declare nothing. Do not add a keyword to that list to fix a routing problem — describing a risk is not taking one, which is the bug the list caused (ADR 0027).
-
-## A Failed Verdict Is Reworked, Not Retried
-
-`applyVerificationRework` decides what follows a verdict that did not pass and records it in `verification_reworks`, one row per failed report. The round budget (`MAX_VERIFICATION_ROUNDS`) counts those rows, not Agent Runs — every run in a rework loop succeeds, so the Bounded Recovery counter never sees it. Rework reaches a producer as prompt feedback read at dispatch, never as a dependency on its verifier (ADR 0026).
-
-## A Blocker May Ask A Person For Input
-
-A Blocker Report's `payload.unblock_request` (`{ needed, why, evidence_requirements }`) is part of the Artifact Envelope contract, checked by `artifactEnvelopeContractErrors` like every other delivery rule, so a malformed request is rejected while the agent can still fix it (ADR 0041, ADR 0042). It may not ask for credentials; `parseUnblockRequest` refuses them.
-
-`parkOnUnblockRequest` (`src/runtime/unblockRequest.ts`) is the only thing that turns one into state. Both settlement paths call it inside their transaction — the run's own settlement and Proof recovery — and it records an `awaiting_human_action` completion event whose Human Action sits on the blocked task, then parks the task on an `awaiting_human_action` Hold naming that Human Action. Rules that follow:
-
-- **A request for input is not a broken delivery.** It never opens `invalid_business_artifact`, and CEO Office shows a task held only on Human Actions by its Human Action, not as a blocked issue.
-- **It owes no Proof, and it cannot outrun refutation.** The scheduler checks for it before the Proof check, and after Grant Refutation: a run that claims a capability it held asks nobody for anything.
-- **Asking counts.** The asking run settles `failed` / `awaiting_human_action`, because `countAgentRunsForTask` skips completed runs; settled `complete`, an agent could ask forever. Confirming never resets the count.
-- **A Human Action exists only with its Hold.** `recordTaskCompletionEvent` builds the Unblock Request item only for the `awaiting_human_action` outcome, so no other path recording the same artifact projects a Human Action nobody waits on.
-- **Confirmation releases by Hold.** Confirming releases every open `awaiting_human_action` Hold naming the Human Action, so the blocked task itself — which gates no other task — re-queues and gets the confirmation as a Settled Fact. An incomplete confirmation, or one whose value looks like a credential, is refused whole.
-
-## A Run Is Told What Was Settled By One Function
-
-`resolveSettledFacts` (`src/runtime/settledFacts.ts`) is the only way a run learns what has already been decided or supplied for its task: Founder Decisions resolved on it, Human Action Confirmations on it or gating it, and Verification Rework it still owes. The dispatch calls it once and hands the same list to the execution brief and the work prompt, whatever caused the run — first run, retry, recovery, rework or a revision. Each fact names its source record, and the prompt states one rule for all of them rather than a paragraph per kind.
-
-Do not add a second channel for one of these, such as a section only the rework path fills or a file in the workspace: a fact kept by the path that caused the re-run is forgotten by the next kind of re-run, and a revised keyword task re-asks the founder for the keyword (ADR 0043). A new kind of settled input is a new case in this function.
-
-## A Replan Is Bound To The Task It Was Made For
-
-`createReplanProposalForTask` asks one question before anything else: does the task offer `request_replan` (`checkTaskAffordance`)? Never its status — that check made every replan offered outside `needs_replan` fail (ADR 0043). `confirm_replan` is offered wherever `request_replan` is, while a proposal waits.
-
-A proposal is a **Split** (2–5 replacement tasks, never a requirement change) or a **Revision** (the same task asked something else: title, description — which carries its acceptance criteria — Proof Schema and required capabilities, plus amendments to *planned* Verification Requirements on a verifier judging it, itself included). The planner is told why the task is stuck (`resolveStuckContext`: open Holds, Blocker Report with any Unblock Request, failed checks, the last rejection's note) and the founder's mode and note. Only an explicit Split falls back to the runtime template; any other planner failure records a `failed` proposal, which cannot be confirmed.
-
-Rules that hold it together:
-
-- **Bound to its basis.** `resolveReplanBasis` records the task's status, open Holds, run count, delivery, upstream deliveries, and the verdicts and requirement fingerprints judging it. `confirmReplanProposal` refuses (`StaleReplanProposalError`) when the present differs, and the API derives `stale` the same way. Nothing writes a stale mark.
-- **Verdict currency is derived.** A verdict records `requirementsFingerprint`; `isVerificationCurrent` compares it with `resolveVerificationRequirementSource` — the one answer to "what is this verifier held to", shared with the handoff. Amending a requirement therefore makes the whole verdict non-current, for every target.
-- **Only a confirmed Revision resets.** It supersedes every open Hold on the task, re-queues it, resets its Bounded Recovery attempts, and resets an amended verifier's round budget (`markVerificationRoundsReset`, a count rather than a timestamp). Requesting or rejecting changes nothing. Verifiers judging the task are parked to re-verify its next delivery.
-- **What it replaced stops speaking.** Verification Rework against an amended standard drops out of Settled Facts, and a superseded Unblock Request can no longer be confirmed or offered.
-
-## A Delivery Is Finalized In One Place
-
-`finalizeDelivery` (`src/runtime/deliveryFinalization.ts`) decides where a valid delivered artifact leaves its task: held, verification failed, CEO review, Founder Decision, internal delivery, or accepted. The scheduler and proof recovery both call it. A path that delivers an artifact and then chooses a status or Hold itself is a second copy of this policy — the shape of the bug where a recovered subtask skipped its Founder Decision (ADR 0024). Acceptance and completion recording are idempotent, so reaching the same delivery twice writes nothing twice.
-
-## A Verdict Is Asked Of One Predicate
-
-A Business Artifact can be `valid` and still record a Verification Verdict that is not `passed` — a well-formed report that the verified work failed. `isVerificationSatisfied` (core) is the only question every success path asks: `isReviewableBusinessArtifact`, CEO Office's pending projection, CEO approval, dependency readiness, parent aggregation, and `acceptTaskBusinessArtifact`, which throws rather than accept. A new acceptance or readiness path must ask it too. Checking `validationStatus` alone is how a failed verification report was one click from approval (ADR 0023).
-
-A verifier never runs in a producer's workspace. `resolveRunWorkspace` follows only `context` dependencies; `prepareVerificationInputs` gives the verifier snapshots in its own workspace, and a snapshot that cannot be made blocks the run before it starts. A snapshot's files come from `BusinessArtifact.deliveryWorkspacePath` — the workspace the runtime captured that delivery from — not from the producer task, which carries an artifact workspace only when a department split it. A delivery recording no workspace fails the handoff by name; handing over the artifact record alone let verifiers report on files they never got (ADR 0023).
-
-Never read a runtime fact back from an agent's workspace. What a verifier was handed lives in `verification_handoffs`; a manifest in the workspace is a file the agent can rewrite. And decide verification duty from the task's dependencies, never from the artifact kind the agent filed — both were real bypasses (ADR 0023).
-
-## Glossary
-
-- **Task Transition Seam**: `applyTaskTransition`. The only writer of task status. _Avoid_: status update, state setter.
-- **Held Task Status**: A status meaning "stopped, waiting on something". See the table above. _Avoid_: blocked, paused.
-- **Runtime-settled**: A task status the runtime will not advance on its own (`complete`, `blocked`, `failed`, `cancelled`). Used by quiescence and Objective Stage Change. It is not the same as core Terminal (`complete`, `cancelled`): `blocked` and `failed` still carry Holds and affordances.
-- **Resume Affordance**: An action an actor can take right now to move a stopped task forward, computed server-side and checked by the route that performs it. _Avoid_: button, enabled action, recovery eligibility.
-- **Standing Reconciliation**: A repair pass that runs on every read and is never marked as done, because the drift it repairs can recur. Contrast with the one-time, marker-guarded migration passes. _Avoid_: migration, backfill.
-- **Hold Release**: Answering one Task Hold and letting the remaining open Holds decide whether the task may move. Distinct from unblocking a task, which only happens when the released Hold was the last one. _Avoid_: unblock, resume.
-- **Agent Capability Grant**: The set of Runtime Capabilities one Agent Run is launched with, resolved by `resolveAgentCapabilityGrant` from the task's needs and the company's Permission Mode. Passed to the adapter as launch flags; never inherited from the operator's machine. _Avoid_: permission mode, allowed tools, sandbox.
-- **Structured Output Contract**: A JSON Schema on `AgentRunRequest.outputSchema` that the CLI enforces on the reply. Held as an object by the runtime; each adapter converts to its CLI's shape. _Avoid_: output format instruction, prompt rule.
-- **Runtime Action Channel**: The ADR 0041 task-delivery action surface an Agent Run uses to submit Artifact Envelopes to the server runtime. It is the only delivery path, and not the broader future daemon wake/control surface. _Avoid_: file protocol, stdout parser.
-- **Artifact Envelope**: A run-local candidate delivery submitted through the Runtime Action Channel and settled into a Business Artifact only after validation. A run that does not complete keeps its last valid one for Proof recovery; a task holds at most one, its latest run's. _Avoid_: business artifact file, raw delivery JSON.
-- **Proof Reference**: A candidate evidence pointer in an Artifact Envelope that settlement may capture as Proof. _Avoid_: proof row, proof.
-- **File Reference**: A workspace-relative file pointer in an Artifact Envelope that settlement may snapshot and bind to the accepted artifact revision. _Avoid_: live workspace path, handoff package.
-- **Run claim**: The conditional write of an Agent Run's outcome (`expectedStatus`), which decides who settles it — the dispatch or the timeout declaration — so the loser writes nothing at all. _Avoid_: status update, race guard.
-- **Run Phase**: Which part of a run is in flight — `preparing_brief`, `executing`, `finalizing` (`repairing_artifact` appears only on runs recorded before ADR 0041). A run is not one process, so a budget or a silence is attributed to a phase rather than to the run. _Avoid_: step, stage, state.
-- **Invocation**: One launch of an agent process inside a run, recorded per phase in `run_invocations`. The brief and the work are two invocations of one run. _Avoid_: attempt, process, sub-run.
-- **Heartbeat**: The owner runner recording that it is still alive, on a clock the runtime owns. Never refreshed by the agent's output: an agent printing in a loop must not look healthy, and one thinking quietly must not look dead. _Avoid_: keepalive, liveness, last seen.
-- **Activity Summary**: A bounded row saying how many bytes moved on a channel between two arrival times, aggregated in memory from raw output. Carries the longest gap inside its own window, so throttling cannot make a silence look shorter. Never stores the output itself. _Avoid_: log row, output record.
-- **Unknown vs silent**: A run with no recorded activity is unknown, not silent. Runs predating observation, and runs whose observation writes failed, report null — reading that as "produced nothing" is how a healthy long task gets declared dead. _Avoid_: idle, no output.
-- **Settlement**: Everything one writer records about how a run ended — its outcome, proof, delivery, Task transition, Hold and completion events — committed as a single transaction that opens with the Run claim. A settlement lands whole or not at all; the loser writes nothing, and an interrupted one leaves the run `running` (ADR 0035). _Avoid_: finalization, completion, wrap-up.
-- **Execution Lease**: How long a task lock stays valid without renewal (`task_locks.lease_expires_at`). The holder renews while it works; silence past the lease is what lets another dispatch take the task over, without anyone having to prove the dead worker is gone. _Avoid_: lock timeout, TTL.
-- **Owner Epoch**: The generation of execution ownership a run belongs to (`tasks.execution_epoch`, monotonic). A run whose epoch is behind the task's current one has been superseded, whatever its status says. _Avoid_: attempt number, version.
-- **Termination Confirmed**: Whether the runtime saw a signalled process actually exit. Unconfirmed means it may still be writing to the workspace, so the task must be isolated rather than re-run there — never read as "terminated". _Avoid_: killed, stopped.
-- **Workspace Claim**: The right to write one directory, keyed by the path (`workspace_claims`). Distinct from the task lock because the contention is over the directory, and two different tasks legitimately share one when a consumer continues in its producer's artifact workspace. _Avoid_: directory lock, task workspace.
-- **Isolated Workspace**: A Workspace Claim kept after its run ended, because the process holding it was never confirmed gone. Unlike a lease it never expires — only a person attesting the process stopped releases it, and until then nothing runs there, including the task's own retry. _Avoid_: quarantine, stale claim.
-- **Execution Event**: A durable fact about how an execution ended, written to the outbox in the same transaction as the state change it describes. Distinct from a task event, which is a narrative for the founder: this is what a machine acts on. _Avoid_: notification, task event.
-- **Outbox**: The table execution events are delivered from, with expiring dispatcher claims, backoff and dead letters. Delivery is at-least-once; consumers are idempotent on the event id, and nothing claims exactly-once across a process. _Avoid_: queue, event log.
-- **Retention Sweep**: The Supervisor's periodic, batched thinning of execution history: activity windows compacted into per-invocation statistics, intermediate meter readings, delivered and decided events, old invocation rows. Never removes what a live mechanism reads, and never recovery decisions (ADR 0039). _Avoid_: cleanup job, purge, garbage collection.
-- **Recovery Decision**: What the coordinator concluded about one execution event, unique on its source event id. The uniqueness is what keeps one failure delivered twice from queueing two replacement executions. _Avoid_: retry record, recovery attempt.
-- **Supervisor**: The process that watches executions from outside the worker, with its own database connection and no dependency on anything the worker serves. It cannot stop another worker's process, and it cannot outlive its own machine; neither is claimed. _Avoid_: monitor, watchdog.
-- **Execution Registry**: The in-process map from task to the live run's stop handle, so a stop request reaches a process rather than only a row. Per-process: a run owned by another worker is reported unreachable, not silently counted as stopped. _Avoid_: process table, job registry.
-- **Task lock run binding**: The run a task lock is held for (`task_locks.run_id`). A release must name the same run, which is what keeps an unwinding dispatch from releasing the lock its successor took — task and owner alone cannot tell two dispatches apart. _Avoid_: lock owner, worker id.
-- **Finalization grace**: The span past a run's budget in which it may still be settling (capture and settlement), during which it is not declared timed out. _Avoid_: extra timeout, slack.
-- **Running company**: `status = 'active'`, the only state `fetchQueuedTasks` dispatches from. A company becomes active when its Company Creation completes, and `creating` / `creation_failed` / `paused` / `stopped` dispatch nothing (ADR 0044). _Avoid_: company enabled, not paused.
-- **Agent Quota Exhausted**: The failure reason and Hold for a run the CLI stopped because its account is out of quota — attributed to the account, not the agent, and not counted against the Bounded Recovery ceiling. _Avoid_: rate limit error, agent failure.
-- **Local Network capability**: `local_network`, held by runs whose deliverable needs a listener (`local-url`, `screenshot`); Codex takes it as `sandbox_workspace_write.network_access`, Claude Code cannot withhold it. _Avoid_: network flag, sandbox exception.
-- **Verification Gate**: A declared verifier's passing, current verdict on the exact artifact being consumed, which `resolveDependencyReadiness` requires before any other consumer may use that output. _Avoid_: verification dependency, blocking check.
-- **Planned Decomposition**: A task's declared `decomposition` — null, or the `define_execute_validate` template — which is the only reason a department splits it. _Avoid_: large task detection, split heuristic.
-- **Artifact Syntax Repair**: Removed with the file delivery it repaired (ADR 0041 supersedes ADR 0028). An envelope that breaks its shape or contract is rejected at submit time instead, and the agent corrects it in the same run. _Avoid_: JSON repair, retry.
-- **Grant Refutation**: Rejecting an Environment-Blocked Blocker because it names a capability the run actually held. The runtime is the authority on what it granted, so that claim is checkable rather than testimony. _Avoid_: blocker validation, agent distrust.
+Any execution-boundary change needs tests for the fresh schema, Founder Vision API, MAH submission
+and result acceptance, and explicit no-fallback behavior.

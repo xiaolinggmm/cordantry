@@ -1,6 +1,4 @@
 import { defineConfig, devices } from "@playwright/test";
-import { fixtureApiUrl } from "./e2e/fixtureApi";
-
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
@@ -13,7 +11,6 @@ export default defineConfig({
   },
   webServer: {
     command: "pnpm --filter @cordantry/dashboard dev --port 5175",
-    env: { CORDANTRY_API_PROXY: fixtureApiUrl },
     reuseExistingServer: !process.env.CI,
     url: "http://127.0.0.1:5175",
   },

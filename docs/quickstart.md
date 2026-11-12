@@ -8,7 +8,7 @@ users do not need Node.js or pnpm.
 
 - Node.js 24 or newer.
 - pnpm 11 or newer.
-- Optional: Claude Code and/or Codex installed on the same machine.
+- MAH installed, configured, and connected to at least one execution Agent.
 - Optional for browser E2E: a compatible Playwright Chromium install.
 
 ## Clone Setup
@@ -28,6 +28,7 @@ The SQLite layer uses Node's built-in `node:sqlite` module. On Node 24 this prin
 From the project you want Cordantry to operate on:
 
 ```bash
+CORDANTRY_MAH_PROJECT_ROOT=/absolute/path/to/your/mah-project \
 CORDANTRY_PORT=8787 pnpm --filter @cordantry/cli start
 ```
 
@@ -72,11 +73,9 @@ http://127.0.0.1:5173/?apiUrl=http%3A%2F%2F127.0.0.1%3A8787
 3. Enter the Founder Vision.
 4. Select Create Company.
 5. Wait while Cordantry shows the six company planning steps.
-6. Open CEO Office when the Company becomes active.
-7. Use the Plan page to inspect objectives, Departments, Assignments and dependencies.
-8. Open a Department to inspect its Assignment Cards.
-9. Use Company Status to review waits and available actions.
-10. Use Pause Company to stop new Assignment submission. Use Stop Company only when the Company must end.
+6. Inspect objectives, Departments, Assignments and dependencies when the Company becomes active.
+7. Use Company Status to review progress, results and available actions.
+8. Use Pause Company to stop new Assignment submission. Use Stop Company only when the Company must end.
 
 `CORDANTRY_MAH_PROJECT_ROOT` supplies the MAH project. The company form does not ask for a project path, CLI path, slot or Agent. If MAH is not installed, select Download MAH. It opens `https://mah.bot/download` by default. Install MAH, return to Cordantry and select Recheck. Cordantry continues the same Company creation.
 
@@ -86,44 +85,31 @@ If the Dashboard cannot connect, make sure the local runtime is still running. C
 
 If Cordantry says that MAH is not installed, use Download MAH and follow the installation steps. If MAH needs setup, finish MAH setup and select Recheck. If MAH is temporarily unavailable, keep the saved Vision and try again later.
 
-## Supported Agents
+## Execution ownership
 
-Built-in adapters:
-
-- Claude Code.
-- Codex.
-- Mock agent for tests.
-
-Claude Code and Codex build their launch from the run's Agent Capability Grant rather than a fixed template, so a research task gets web search and an engineering task gets a shell, and neither inherits your own `.claude` / `$CODEX_HOME` configuration, skills, hooks, or MCP servers. See ADR 0021.
-
-Custom agents are still represented by command templates with capability tags. Command templates can interpolate:
-
-- `{workspace}`: the task workspace path.
-- `{promptPath}`: the prompt file path.
-
-The adapter interface exposes `id`, `name`, `capabilities`, `detect()`, and `run()`.
+Cordantry submits Company Planning and ordinary Assignments to MAH. MAH selects and runs the configured
+Agent, manages its workspace, and returns the canonical artifact. Cordantry stores the Agent and model
+identity from MAH's Assignment Result Judgment for audit, but never selects or launches an Agent itself.
 
 ## Testing
 
 Core test commands:
 
 ```bash
-pnpm smoke:mock
 pnpm test
 pnpm typecheck
+pnpm build
 ```
 
-Optional real-agent smoke:
+Real MAH end-to-end smoke:
 
 ```bash
-pnpm smoke:real-agent
+CORDANTRY_MAH_PROJECT_ROOT=/absolute/path/to/your/mah-project pnpm smoke:mah
 ```
 
-The real-agent smoke requires a working local agent, defaults to Claude Code, and runs in an isolated temporary workspace. To try Codex:
-
-```bash
-CORDANTRY_REAL_AGENT=codex pnpm smoke:real-agent
-```
+This submits real MAH Tasks for Company Planning and one ordinary Assignment. It uses an isolated
+Cordantry state directory and does not delete MAH project data, Agent login state, external
+configuration, or MAH workspaces.
 
 Dashboard commands:
 

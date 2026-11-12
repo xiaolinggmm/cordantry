@@ -1,15 +1,13 @@
-import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, statSync } from "node:fs";
-import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, Menu } from "electron";
-import { superviseCordantry, type SupervisedCordantry } from "../../cli/src/commands/supervise";
+import { startCordantry, type StartedCordantry } from "../../cli/src/commands/start";
 import { agentPath, configuredProjectRoot, loadDesktopSettings, saveDesktopSettings } from "./runtime";
 
 let window: BrowserWindow | null = null;
-let supervised: SupervisedCordantry | null = null;
+let runtime: StartedCordantry | null = null;
 let shuttingDown = false;
 const currentDir = dirname(fileURLToPath(import.meta.url));
 
@@ -27,10 +25,6 @@ function dashboardRoot(): string {
   return app.isPackaged
     ? join(process.resourcesPath, "dashboard")
     : resolve(currentDir, "../../dashboard/dist");
-}
-
-function resourcePath(name: string): string {
-  return app.isPackaged ? join(process.resourcesPath, name) : join(currentDir, name);
 }
 
 function settingsPath(): string {
@@ -59,38 +53,16 @@ async function selectProject(force = false): Promise<string | null> {
 }
 
 async function startProject(projectRoot: string): Promise<void> {
-  await supervised?.close();
-  supervised = null;
-  const port = await availablePort();
-  const url = `http://127.0.0.1:${port}`;
-  const workerPath = resourcePath("worker.mjs");
-  const actionServerPath = resourcePath("runtime-action.mjs");
-  const env = {
-    ...process.env,
-    PATH: agentPath(homedir(), process.env.PATH),
-    ELECTRON_RUN_AS_NODE: "1",
-    CORDANTRY_DASHBOARD_ROOT: dashboardRoot(),
-    CORDANTRY_PORT: String(port),
-    CORDANTRY_PROJECT_ROOT: projectRoot,
-    CORDANTRY_RUNTIME_ACTION_SERVER: actionServerPath,
-  };
-
-  supervised = await superviseCordantry({
+  await runtime?.close();
+  runtime = null;
+  process.env.PATH = agentPath(homedir(), process.env.PATH);
+  runtime = await startCordantry({
     projectRoot,
+    dashboardRoot: dashboardRoot(),
+    port: 0,
+    mahProjectRoot: process.env.CORDANTRY_MAH_PROJECT_ROOT,
     log,
-    spawnWorker: () => {
-      const child = spawn(process.execPath, [workerPath], {
-        cwd: projectRoot,
-        env,
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
-      });
-      child.stdout?.on("data", (chunk) => log(String(chunk).trimEnd()));
-      child.stderr?.on("data", (chunk) => log(String(chunk).trimEnd()));
-      return child;
-    },
   });
-
-  await waitForServer(`${url}/api/agents`, 30_000);
   if (!window || window.isDestroyed()) {
     window = new BrowserWindow({
       width: 1440,
@@ -101,7 +73,7 @@ async function startProject(projectRoot: string): Promise<void> {
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
   }
-  await window.loadURL(url);
+  await window.loadURL(runtime.url);
   window.show();
 }
 
@@ -131,39 +103,11 @@ function installMenu(): void {
   ]));
 }
 
-async function availablePort(): Promise<number> {
-  return await new Promise<number>((resolvePort, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("Unable to reserve a local dashboard port."));
-        return;
-      }
-      const port = address.port;
-      server.close((error) => error ? reject(error) : resolvePort(port));
-    });
-  });
-}
-
-async function waitForServer(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      if ((await fetch(url)).ok) return;
-    } catch { /* The supervised worker is still starting. */ }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
-  }
-  throw new Error(`The local runtime did not become ready within ${Math.round(timeoutMs / 1000)} seconds.`);
-}
-
 app.on("before-quit", (event) => {
-  if (shuttingDown || !supervised) return;
+  if (shuttingDown || !runtime) return;
   event.preventDefault();
   shuttingDown = true;
-  void supervised.close().finally(() => app.quit());
+  void runtime.close().finally(() => app.quit());
 });
 
 app.on("window-all-closed", () => app.quit());

@@ -3,60 +3,27 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createId } from "@cordantry/core";
 import {
-  aiSaasPlaybook,
-  getAgentAvailability,
-  isRunnable,
   createApiServer,
-  applyCompanyPlanDataCutover,
-  createClaudeCodeAdapter,
-  createCodexAdapter,
   createDatabaseClient,
   createMahCompanyPlanProvider,
   mahCommand as createMahCommand,
-  createProofCollector,
   createRepositories,
   migrate,
-  recoverInterruptedCeoIntakes,
-  runCeoIntakeJobs,
-  runFinalFounderReportJobs,
-  runSchedulerOnce,
   runAssignmentCoordinatorOnce,
-  executionBudgetFromEnvironment,
-  type BudgetPolicy,
-  type AgentAdapter,
-  type ExecutionBackend,
   type MahCommand,
-  type MahSlotClass,
-  type SchedulerEvent,
-  type SchedulerWakeReason,
+  type CoordinatorWakeReason,
 } from "@cordantry/server";
-
-/**
- * How often a live run's owner records that it is still here.
- *
- * Short enough that a lost worker is visible within a scan or two, long enough that a slow database
- * is not asked to take a write every second. It is an observation cadence, not a budget: nothing is
- * declared dead by a missing heartbeat yet.
- */
-const HEARTBEAT_INTERVAL_MS = 20_000;
 
 export type StartCordantryOptions = {
   dashboardRoot?: string;
   projectRoot: string;
   host?: string;
-  workerId?: string;
-  executionBudget?: Partial<BudgetPolicy>;
   port?: number;
-  agents?: AgentAdapter[];
-  schedulerIntervalMs?: number;
+  coordinatorIntervalMs?: number;
   log?: (line: string) => void;
-  /** @deprecated Ignored: execution mode is persisted per company (ADR 0051). */
-  executionBackend?: ExecutionBackend;
   mahCommand?: MahCommand;
   /** Explicit MAH project used for Company Planning; when omitted, creation asks the Founder to install or configure MAH. */
   mahProjectRoot?: string;
-  /** @deprecated Slot selection is persisted in the company MAH configuration. */
-  mahSlotClass?: MahSlotClass;
 };
 
 export type StartedCordantry = {
@@ -65,20 +32,16 @@ export type StartedCordantry = {
 };
 
 export async function startCordantry(options: StartCordantryOptions): Promise<StartedCordantry> {
-  const executionBudget = options.executionBudget ?? executionBudgetFromEnvironment();
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 0;
   const log = options.log ?? console.log;
-  const schedulerIntervalMs = options.schedulerIntervalMs ?? Number(process.env.CORDANTRY_SCHEDULER_INTERVAL_MS ?? 5_000);
+  const coordinatorIntervalMs = options.coordinatorIntervalMs ?? Number(process.env.CORDANTRY_COORDINATOR_INTERVAL_MS ?? 5_000);
   const stateDir = join(options.projectRoot, ".cordantry");
   mkdirSync(stateDir, { recursive: true });
 
-  // Execution mode and MAH readiness belong to each company, never server startup.
   const database = createDatabaseClient(join(stateDir, "state.sqlite"));
   migrate(database);
-  applyCompanyPlanDataCutover(database);
   const repositories = createRepositories(database);
-  const agents = options.agents ?? [createClaudeCodeAdapter({ log }), createCodexAdapter({ log })];
   const mahProjectRoot = options.mahProjectRoot ?? process.env.CORDANTRY_MAH_PROJECT_ROOT;
   const companyPlanProvider = mahProjectRoot
     ? createMahCompanyPlanProvider({
@@ -88,40 +51,23 @@ export async function startCordantry(options: StartCordantryOptions): Promise<St
       })
     : undefined;
 
-  for (const agent of agents) {
-    const availability = await getAgentAvailability(agent);
-    const detected = availability.installed && isRunnable(availability.state);
-    const support = (await agent.launchPlan?.().catch(() => null))?.support;
-    log(`Agent ${agent.name}: ${detected ? "available" : "unavailable"}${support ? ` (launch isolation: ${support.isolationLevel})` : ""}`);
-    for (const warning of support?.warnings ?? []) {
-      log(`Agent ${agent.name} warning: ${warning}`);
-    }
-  }
-
-  let scheduler: ReturnType<typeof startSchedulerLoop> | undefined;
+  let coordinator: ReturnType<typeof startAssignmentCoordinatorLoop> | undefined;
   const apiServer = createApiServer({
     dashboardRoot: options.dashboardRoot,
-    mahCommand: options.mahCommand,
     projectRoot: options.projectRoot,
     repositories,
-    agents,
     ...(companyPlanProvider ? { companyPlanProvider } : {}),
     log,
     createId,
-    requestSchedulerWake: (reason) => scheduler?.requestWake(reason),
+    requestCoordinatorWake: (reason) => coordinator?.requestWake(reason),
   });
-  scheduler = startSchedulerLoop({
-    agents,
-    workerId: options.workerId,
-    executionBudget,
-    intervalMs: schedulerIntervalMs,
+  coordinator = startAssignmentCoordinatorLoop({
+    intervalMs: coordinatorIntervalMs,
     log,
     projectRoot: options.projectRoot,
     repositories,
     mahCommand: options.mahCommand,
     mahProjectRoot,
-    createId,
-    publish: (event) => apiServer.events.publish(event),
   });
 
   await new Promise<void>((resolve) => {
@@ -143,80 +89,24 @@ export async function startCordantry(options: StartCordantryOptions): Promise<St
       await new Promise<void>((resolve, reject) => {
         apiServer.httpServer.close((error) => (error ? reject(error) : resolve()));
       });
-      scheduler.stop();
+      coordinator.stop();
       database.close();
     },
   };
 }
 
-export function startSchedulerLoop(input: {
-  agents: AgentAdapter[];
-  workerId?: string;
-  executionBudget?: Partial<BudgetPolicy>;
+export function startAssignmentCoordinatorLoop(input: {
   intervalMs: number;
   log: (line: string) => void;
   projectRoot: string;
-  publish: Parameters<typeof runSchedulerOnce>[0]["emit"];
   repositories: ReturnType<typeof createRepositories>;
-  /** @deprecated Ignored: execution mode is persisted per company (ADR 0051). */
-  executionBackend?: ExecutionBackend;
-  mahAdapter?: AgentAdapter;
   mahCommand?: MahCommand;
   mahProjectRoot?: string;
-  createId?: (prefix: string) => string;
 }) {
-  const workerId = input.workerId ?? createId("cli-worker");
-  const proofCollector = createProofCollector({ proofSchemas: aiSaasPlaybook.proofSchemas });
   let running = false;
   let stopped = false;
   let wakePending = false;
   let wakeTimer: ReturnType<typeof setTimeout> | null = null;
-  let reportJobsRunning = false;
-  let intakeJobsRunning = false;
-  // An assessment this process was running when it last stopped is not running now.
-  recoverInterruptedCeoIntakes(input.repositories);
-
-  function emit(event: SchedulerEvent) {
-    input.log(`Scheduler ${event.type}: ${event.taskId ?? event.companyId ?? ""} ${event.message}`);
-    input.publish(event);
-  }
-
-  function drainFinalFounderReportJobs() {
-    if (reportJobsRunning || stopped) {
-      return;
-    }
-    reportJobsRunning = true;
-    void runFinalFounderReportJobs({
-      projectRoot: input.projectRoot,
-      repositories: input.repositories,
-      adapters: input.agents,
-      createId: input.createId,
-      emit,
-    })
-      .catch((error) => input.log(`Final Founder Report job failed: ${(error as Error).message}`))
-      .finally(() => {
-        reportJobsRunning = false;
-      });
-  }
-
-  function drainCeoIntakeJobs() {
-    if (intakeJobsRunning || stopped) {
-      return;
-    }
-    intakeJobsRunning = true;
-    void runCeoIntakeJobs({
-      projectRoot: input.projectRoot,
-      repositories: input.repositories,
-      adapters: input.agents,
-      createId: input.createId,
-      emit: (event) => emit(event),
-      requestSchedulerWake: () => requestWake("ceo_intake_received"),
-    })
-      .catch((error) => input.log(`CEO Intake assessment failed: ${(error as Error).message}`))
-      .finally(() => {
-        intakeJobsRunning = false;
-      });
-  }
 
   async function tick() {
     if (running || stopped) {
@@ -226,50 +116,20 @@ export function startSchedulerLoop(input: {
     running = true;
     wakePending = false;
     try {
-      if (input.mahProjectRoot) {
-        await runAssignmentCoordinatorOnce({
-          repositories: input.repositories,
-          cordantryProjectRoot: input.projectRoot,
-          mahProjectRoot: input.mahProjectRoot,
-          command: input.mahCommand ?? createMahCommand(),
-          requestSchedulerWake: () => requestWake("dependency_cascade_queued"),
-        });
+      if (!input.mahProjectRoot) {
+        return;
       }
-      const result = await runSchedulerOnce({
-        projectRoot: input.projectRoot,
-        executionBackend: input.executionBackend,
-        mahAdapter: input.mahAdapter,
-        mahCommand: input.mahCommand,
+      await runAssignmentCoordinatorOnce({
         repositories: input.repositories,
-        adapters: input.agents,
-        workerId,
-        executionBudget: input.executionBudget,
-        maxTasks: 1,
-        // No `approvalRequired` override: the scheduler resolves each task's own company Permission
-        // Mode. Passing one here is what pinned every company to the `balanced` default.
-        proofCollector,
-        proofSchemas: aiSaasPlaybook.proofSchemas,
-        createId: input.createId,
-        // The owner runner reports in on its own clock while a run is in flight. Observation only:
-        // nothing reads a heartbeat to end a run (execution-health P1).
-        heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
-        emit,
+        cordantryProjectRoot: input.projectRoot,
+        mahProjectRoot: input.mahProjectRoot,
+        command: input.mahCommand ?? createMahCommand(),
+        requestCoordinatorWake: () => requestWake("dependency_cascade_queued"),
       });
-
-      if (result.started.length > 0 || result.completed.length > 0 || result.failed.length > 0 || result.blocked.length > 0) {
-        input.log(
-          `Scheduler tick: started=${result.started.length} completed=${result.completed.length} failed=${result.failed.length} blocked=${result.blocked.length}`,
-        );
-      }
     } catch (error) {
-      input.log(`Scheduler failed: ${(error as Error).message}`);
+      input.log(`MAH assignment coordinator failed: ${(error as Error).message}`);
     } finally {
       running = false;
-      // Author any enqueued Final Founder Report off the tick's path so a slow CEO Agent run never
-      // stalls task dispatch; a guard keeps at most one job runner in flight.
-      drainFinalFounderReportJobs();
-      // Founder input is assessed off the tick's path too, so a CEO run never stalls dispatch.
-      drainCeoIntakeJobs();
       if (wakePending && !stopped) {
         scheduleWakeTick();
       }
@@ -289,14 +149,14 @@ export function startSchedulerLoop(input: {
 
   const interval = setInterval(() => void tick(), input.intervalMs);
   void tick();
-  input.log(`Scheduler: running every ${input.intervalMs}ms`);
+  input.log(`MAH assignment coordinator: running every ${input.intervalMs}ms`);
 
-  function requestWake(reason: SchedulerWakeReason) {
+  function requestWake(reason: CoordinatorWakeReason) {
     if (stopped) {
       return;
     }
 
-    input.log(`Scheduler wake requested: ${reason}`);
+    input.log(`MAH assignment coordinator wake requested: ${reason}`);
     wakePending = true;
     if (!running) {
       scheduleWakeTick();

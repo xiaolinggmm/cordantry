@@ -34,11 +34,7 @@
     ],
     "extraResources": [
       { "from": "../dashboard/dist", "to": "dashboard" },
-      { "from": "../../LICENSE", "to": "LICENSE" },
-      { "from": "dist/worker.mjs", "to": "worker.mjs" },
-      { "from": "dist/worker.mjs.map", "to": "worker.mjs.map" },
-      { "from": "dist/runtime-action.mjs", "to": "runtime-action.mjs" },
-      { "from": "dist/runtime-action.mjs.map", "to": "runtime-action.mjs.map" }
+      { "from": "../../LICENSE", "to": "LICENSE" }
     ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "mac": {

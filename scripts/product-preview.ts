@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   process.once("SIGTERM", stop);
 
   try {
-    await waitForApi("http://127.0.0.1:8787/api/agents", 30_000);
+    await waitForApi("http://127.0.0.1:8787/api/companies", 30_000);
     dashboard = launch(plan.dashboard);
   } catch (error) {
     stop();

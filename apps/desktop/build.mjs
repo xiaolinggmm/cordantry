@@ -9,8 +9,4 @@ const shared = {
   target: "node24",
 };
 
-await Promise.all([
-  build({ ...shared, entryPoints: ["src/main.ts"], format: "esm", outfile: "dist/main.mjs" }),
-  build({ ...shared, entryPoints: ["src/worker.ts"], format: "esm", outfile: "dist/worker.mjs" }),
-  build({ ...shared, entryPoints: ["src/runtimeAction.ts"], format: "esm", outfile: "dist/runtime-action.mjs" }),
-]);
+await build({ ...shared, entryPoints: ["src/main.ts"], format: "esm", outfile: "dist/main.mjs" });
