@@ -131,6 +131,7 @@ describe("startCordantry", () => {
 
     try {
       const created = await postJson<{ company: { id: string } }>(`${started.url}/api/companies`, {
+        companyName: "Creator Studio",
         founderVision: "Help independent creators crop videos faster.",
       });
       const state = await waitForCompanyState(started.url, created.company.id, "active");

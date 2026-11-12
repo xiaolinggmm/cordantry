@@ -20,6 +20,7 @@ try {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      companyName: "MAH Research Studio",
       founderVision: "Create a tiny internal market-research company with exactly one ordinary Assignment: write a concise three-point checklist for interviewing one prospective user. Do not create Product Direction work.",
       creationIdempotencyKey: `mah-smoke-${Date.now()}`,
     }),

@@ -13,10 +13,11 @@ it("creates a company from Founder Vision without asking for an Agent or executi
   render(<App apiClient={client} />);
 
   await user.click(await screen.findByRole("button", { name: "Create directly" }));
+  await user.type(await screen.findByLabelText("Company name"), "Creator Studio");
   await user.type(await screen.findByLabelText("Founder vision"), "Help creators crop video faster.");
   await user.click(screen.getByRole("button", { name: "Create Company" }));
 
-  expect(client.createCompany).toHaveBeenCalledWith(expect.objectContaining({ founderVision: "Help creators crop video faster." }));
+  expect(client.createCompany).toHaveBeenCalledWith(expect.objectContaining({ companyName: "Creator Studio", founderVision: "Help creators crop video faster." }));
   expect(screen.queryByText(/Codex|Claude|execution mode/i)).not.toBeInTheDocument();
   expect(await screen.findByRole("heading", { name: "Creator Studio" })).toBeInTheDocument();
 });

@@ -4,7 +4,7 @@ import type { createRepositories, StoredCompanyProblem } from "../db/repositorie
 import { EventStream } from "../events/sse";
 import { serveDashboardFile } from "./staticDashboard";
 
-export type CompanyPlanProvider = (input: { companyId: string; founderVision: string; projectRoot: string }) => Promise<unknown>;
+export type CompanyPlanProvider = (input: { companyId: string; companyName: string; founderVision: string; projectRoot: string }) => Promise<unknown>;
 export type CoordinatorWakeReason = "dependency_cascade_queued" | "company_resumed";
 
 export type ApiServerOptions = {
@@ -58,8 +58,8 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse, 
 
   if (method === "POST" && url.pathname === "/api/companies") {
     const body = await readJson(request);
-    if (Object.keys(body).some((key) => !["founderVision", "creationIdempotencyKey"].includes(key))) {
-      sendJson(response, 400, { error: "Company creation accepts only Founder Vision and an optional idempotency key." });
+    if (Object.keys(body).some((key) => !["companyName", "founderVision", "creationIdempotencyKey"].includes(key))) {
+      sendJson(response, 400, { error: "Company creation accepts only a company name, Founder Vision and an optional idempotency key." });
       return;
     }
     await acceptCompanyPlanning(response, options, body);
@@ -110,21 +110,24 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse, 
 }
 
 async function acceptCompanyPlanning(response: ServerResponse, options: ApiServerOptions, body: Record<string, unknown>) {
+  const companyName = typeof body.companyName === "string" ? body.companyName.trim() : "";
+  if (!companyName) return sendJson(response, 400, { error: "Company name is required." });
   const founderVision = typeof body.founderVision === "string" ? body.founderVision.trim() : "";
   if (!founderVision) return sendJson(response, 400, { error: "Founder vision is required." });
   const creationIdempotencyKey = typeof body.creationIdempotencyKey === "string" && body.creationIdempotencyKey.trim()
     ? body.creationIdempotencyKey.trim() : id(options, "creation_key");
   const existing = options.repositories.getCompanyByCreationIdempotencyKey(creationIdempotencyKey);
   if (existing) {
-    if (existing.founderVision !== founderVision) return sendJson(response, 409, problem("plan_needs_new_attempt"));
+    const existingName = existing.creationInput?.companyName ?? existing.name;
+    if (existingName !== companyName || existing.founderVision !== founderVision) return sendJson(response, 409, problem("plan_needs_new_attempt"));
     if (!options.companyPlanProvider && existing.status !== "active") return sendProblem(response, existing, options, "installation_required");
     sendJson(response, 202, { schemaVersion: 1, kind: "company_creation_receipt", company: publicCompany(existing), createdAt: existing.createdAt });
     return;
   }
   const timestamp = now(options);
   const company: Company = {
-    id: id(options, "company"), name: "Planning company", founderVision, status: "creating",
-    creationIdempotencyKey, creationInput: { founderVision }, createdAt: timestamp, updatedAt: timestamp,
+    id: id(options, "company"), name: companyName, founderVision, status: "creating",
+    creationIdempotencyKey, creationInput: { companyName, founderVision }, createdAt: timestamp, updatedAt: timestamp,
   };
   options.repositories.createCompany(company);
   appendEvent(options, company, "creation_request_accepted", "Your vision is saved.");
@@ -147,7 +150,8 @@ function schedulePlanning(options: ApiServerOptions, company: Company) {
 
 async function completePlanning(options: ApiServerOptions, company: Company, provider: CompanyPlanProvider) {
   appendEvent(options, company, "plan_requested", "Cordantry is preparing your company plan.");
-  const plan = companyPlanSchema.parse(await provider({ companyId: company.id, founderVision: company.founderVision, projectRoot: options.projectRoot }));
+  const companyName = company.creationInput?.companyName ?? company.name;
+  const plan = companyPlanSchema.parse(await provider({ companyId: company.id, companyName, founderVision: company.founderVision, projectRoot: options.projectRoot }));
   appendEvent(options, company, "artifact_received", "Cordantry received your company plan.");
   appendEvent(options, company, "plan_validated", "Cordantry confirmed the plan content.");
   const activatedAt = now(options);
@@ -161,7 +165,7 @@ async function completePlanning(options: ApiServerOptions, company: Company, pro
       directionKey: assignment.directionKey ?? null,
     }));
     appendEvent(options, company, "organization_created", "Cordantry created the departments and work plan.");
-    options.repositories.activatePlannedCompany(company.id, plan.company.name, activatedAt);
+    options.repositories.activatePlannedCompany(company.id, companyName, activatedAt);
     appendEvent(options, { ...company, status: "active" }, "company_ready", "Your company is ready.");
   });
   options.requestCoordinatorWake?.("dependency_cascade_queued");

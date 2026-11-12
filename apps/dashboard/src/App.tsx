@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { createApiClient, CompanyProblemError, type ApiClient, type CompanyProblem, type CompanyStateResponse } from "./api/client";
+import { createApiClient, CompanyProblemError, type ApiClient, type CompanyProblem, type CompanyStateResponse, type CreateCompanyInput } from "./api/client";
 import { Onboarding } from "./pages/Onboarding";
 import { PlannedCompany } from "./pages/PlannedCompany";
 import { LanguageProvider } from "./ui/language";
@@ -48,10 +48,10 @@ export default function App({ apiClient }: AppProps) {
     setProblem(next.problem);
   }
 
-  async function create(founderVision: string) {
+  async function create(input: CreateCompanyInput) {
     setBusy(true); setError(null);
     try {
-      const receipt = await client.createCompany({ founderVision, creationIdempotencyKey: crypto.randomUUID() });
+      const receipt = await client.createCompany({ ...input, creationIdempotencyKey: crypto.randomUUID() });
       await load(receipt.company.id);
     } catch (cause) {
       if (cause instanceof CompanyProblemError) setProblem(cause.problem);
@@ -77,6 +77,6 @@ export default function App({ apiClient }: AppProps) {
   return <LanguageProvider>
     {loading ? <main>Loading Cordantry…</main>
       : state ? <PlannedCompany state={state} busy={busy} problem={problem} onPause={() => void operate("pause")} onResume={() => void operate("resume")} onStop={() => void operate("stop")} onRecheck={() => void operate("retry")} />
-      : <Onboarding onCreate={(input) => void create(input.founderVision)} isCreating={busy} error={error} />}
+      : <Onboarding onCreate={(input) => void create(input)} isCreating={busy} error={error} />}
   </LanguageProvider>;
 }

@@ -37,8 +37,9 @@ export function createMahCompanyPlanProvider(options: MahCompanyPlanProviderOpti
   const now = options.now ?? (() => new Date());
   const mahProjectRoot = realpathSync(resolve(options.mahProjectRoot));
 
-  const provide = async (input: { companyId: string; founderVision: string; projectRoot: string }): Promise<CompanyPlan> => {
+  const provide = async (input: { companyId: string; companyName: string; founderVision: string; projectRoot: string }): Promise<CompanyPlan> => {
     const requestDigest = digest({
+      companyName: input.companyName,
       founderVision: input.founderVision,
       mahProjectRoot,
       schema: companyPlanOutputSchema,
@@ -99,7 +100,7 @@ export function createMahCompanyPlanProvider(options: MahCompanyPlanProviderOpti
       const descriptionPath = join(requestRoot, "description.md");
       const metadataPath = join(requestRoot, "metadata.json");
       const schemaPath = join(requestRoot, "company-plan.schema.json");
-      writeFileSync(descriptionPath, companyPlanningDescription(input.founderVision, record), "utf8");
+      writeFileSync(descriptionPath, companyPlanningDescription(input.companyName, input.founderVision, record), "utf8");
       writeFileSync(metadataPath, JSON.stringify({
         cordantry_contract: "company-plan/v1",
         cordantry_company_id: input.companyId,
@@ -258,13 +259,14 @@ async function readCompanyPlanArtifact(command: MahCommand, taskId: string, proj
   return JSON.parse(body.content) as CompanyPlan;
 }
 
-function companyPlanningDescription(founderVision: string, record: { correctionCount?: number; detail: string }): string {
+function companyPlanningDescription(companyName: string, founderVision: string, record: { correctionCount?: number; detail: string }): string {
   return [
     "Derive one Cordantry Company Plan from the Founder Vision.",
     "The attached company-plan.schema.json is the required output contract.",
     "Write only the schema-valid JSON artifact to artifacts/company-plan.json in this MAH Task's canonical artifact scope.",
     "Do not expose execution details in the business artifact.",
     ...(record.correctionCount ? ["Correct the previous Company Plan. Keep its valid business meaning and fix these structural errors:", record.detail] : []),
+    `Founder Company Name: ${companyName}`,
     `Founder Vision: ${founderVision}`,
   ].join("\n\n");
 }

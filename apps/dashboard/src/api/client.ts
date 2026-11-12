@@ -42,7 +42,7 @@ export type CompanyStateResponse = {
   assignments: DepartmentAssignmentSummary[];
 };
 
-export type CreateCompanyInput = { founderVision: string; creationIdempotencyKey?: string };
+export type CreateCompanyInput = { companyName: string; founderVision: string; creationIdempotencyKey?: string };
 export type ServerEvent = { type: string; companyId?: string; message: string; status?: string };
 
 export type ApiClient = {

@@ -26,13 +26,16 @@ const plan = {
 };
 
 describe("MAH-only company API", () => {
-  it("accepts only Founder Vision and materializes a MAH plan", async () => {
-    const runtime = await start(async () => plan);
-    const response = await fetch(`${runtime.url}/api/companies`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ founderVision: "Build it" }) });
+  it("accepts a Founder company name and vision and materializes a MAH plan", async () => {
+    let planningInput: Parameters<CompanyPlanProvider>[0] | undefined;
+    const runtime = await start(async (input) => { planningInput = input; return plan; });
+    const response = await fetch(`${runtime.url}/api/companies`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ companyName: "Creator Studio", founderVision: "Build it" }) });
     expect(response.status).toBe(202);
     const receipt = await response.json() as { company: { id: string } };
     await expect.poll(() => runtime.repositories.getCompany(receipt.company.id)?.status).toBe("active");
     const state = await fetch(`${runtime.url}/api/companies/${receipt.company.id}/state`).then((value) => value.json()) as Record<string, unknown> & { assignments: Array<Record<string, unknown>> };
+    expect(state.company).toMatchObject({ name: "Creator Studio" });
+    expect(planningInput).toMatchObject({ companyName: "Creator Studio", founderVision: "Build it" });
     expect(state.assignments).toHaveLength(1);
     expect(state.assignments[0]).not.toHaveProperty("companyId");
     expect(JSON.stringify(state)).not.toMatch(/executionMode|selectedCeoAgentId|assigneeAgentId|leadAgentId/);
@@ -41,7 +44,7 @@ describe("MAH-only company API", () => {
 
   it("rejects legacy routing input and exposes no Agent endpoint", async () => {
     const runtime = await start(async () => plan);
-    const legacy = await fetch(`${runtime.url}/api/companies`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ founderVision: "Build it", executionMode: "codex" }) });
+    const legacy = await fetch(`${runtime.url}/api/companies`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ companyName: "Creator Studio", founderVision: "Build it", executionMode: "codex" }) });
     expect(legacy.status).toBe(400);
     expect((await fetch(`${runtime.url}/api/agents`)).status).toBe(404);
     runtime.database.close();
@@ -49,7 +52,7 @@ describe("MAH-only company API", () => {
 
   it("fails explicitly when MAH is unavailable and never falls back", async () => {
     const runtime = await start();
-    const response = await fetch(`${runtime.url}/api/companies`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ founderVision: "Build it" }) });
+    const response = await fetch(`${runtime.url}/api/companies`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ companyName: "Creator Studio", founderVision: "Build it" }) });
     expect(response.status).toBe(503);
     const body = await response.json() as { category: string; company: { status: string } };
     expect(body).toMatchObject({ category: "installation_required", company: { status: "creation_failed" } });

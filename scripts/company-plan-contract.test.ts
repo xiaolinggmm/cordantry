@@ -31,7 +31,7 @@ it("serves the receipt and public Company Plan snapshot through the real Dashboa
   const client = createApiClient(`http://127.0.0.1:${address.port}`);
 
   try {
-    const receipt = await client.createCompany({ founderVision: "Help creators crop video faster.", creationIdempotencyKey: "contract-test" });
+    const receipt = await client.createCompany({ companyName: "Creator Studio", founderVision: "Help creators crop video faster.", creationIdempotencyKey: "contract-test" });
     if (!("kind" in receipt) || receipt.kind !== "company_creation_receipt") throw new Error("Expected a creation receipt.");
     let snapshot = await client.getCompanyState(receipt.company.id);
     for (let attempt = 0; attempt < 30 && (!("kind" in snapshot) || snapshot.company.status !== "active"); attempt += 1) {

@@ -6,7 +6,7 @@ export type Company = {
   founderVision: string;
   status: CompanyStatus;
   creationIdempotencyKey?: string | null;
-  creationInput?: { founderVision: string } | null;
+  creationInput?: { companyName?: string; founderVision: string } | null;
   createdAt: string;
   updatedAt: string;
 };

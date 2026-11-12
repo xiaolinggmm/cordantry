@@ -22,11 +22,12 @@ test("creates a company from Founder Vision without direct Agent routing", async
 
   await page.goto("/");
   await page.getByRole("button", { name: "Create directly" }).click();
+  await page.getByLabel("Company name").fill("Creator Studio");
   await page.getByLabel("Founder vision").fill("Help creators");
   await page.getByRole("button", { name: "Create Company" }).click();
   await expect(page.getByRole("heading", { name: "MAH Company" })).toBeVisible();
   await expect(page.getByText("Interview creators")).toBeVisible();
   expect(requests).toHaveLength(1);
-  expect(requests[0]).toMatchObject({ founderVision: "Help creators" });
+  expect(requests[0]).toMatchObject({ companyName: "Creator Studio", founderVision: "Help creators" });
   expect(JSON.stringify(requests[0])).not.toMatch(/executionMode|agentId|mahConfig|slot|cliPath/i);
 });
